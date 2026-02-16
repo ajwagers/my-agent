@@ -1,0 +1,5 @@
+# Agent Identity
+name: your_agent_name
+nature: a brief description of what the agent is
+vibe: comma, separated, personality, traits
+emoji: your_emoji

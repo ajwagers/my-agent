@@ -13,16 +13,40 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart:
+        unless-stopped
 
   agent-core:
     build: ./agent-core
     container_name: agent-core
+    stdin_open: true
+    tty: true
     networks:
       - agent_net
     depends_on:
       ollama-runner:
         condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DEFAULT_MODEL=phi3:latest
+      - REASONING_MODEL=llama3.1:8b
+      - BOOTSTRAP_MODEL=mistral:latest
+      - DEEP_MODEL=qwen2.5:14b
+      - DEEP_NUM_CTX=16384
+      - NUM_CTX=8192
+    volumes:
+      - ./agent-core/policy.yaml:/app/policy.yaml:ro
+      - agent_sandbox:/sandbox
+      - ./agent-identity:/agent
     ports:
       - "8000:8000"
     healthcheck:
@@ -30,8 +54,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
-    restart: unless-stopped
+      start_period: 60s       # Ollama boot time
+    restart:
+        unless-stopped
 
   telegram-gateway:
     build: ./telegram-gateway
@@ -41,6 +66,10 @@ services:
     depends_on:
       agent-core:
         condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      - REDIS_URL=redis://redis:6379
     env_file:
       - .env
     restart: unless-stopped
@@ -51,11 +80,12 @@ services:
     networks:
       - agent_net
     ports:
-      - "8100:8000"
+      - "8100:8000"  # Chroma UI
     volumes:
       - chroma_data:/chroma/chroma
     command: chroma run --host 0.0.0.0 --port 8000
-    restart: unless-stopped
+    restart: 
+        unless-stopped
 
   web-ui:
     build: ./web-ui
@@ -64,16 +94,21 @@ services:
       - agent_net
     ports:
       - "8501:8501"
-    depends_on:
+    depends_on: 
       - agent-core
       - chroma-rag
     environment:
       - AGENT_URL=http://agent-core:8000
       - CHROMA_URL=http://chroma-rag:8000
-    restart: unless-stopped
+      - BOOTSTRAP_MODEL=mistral:latest
+      - NUM_CTX=8192
+    restart: 
+        unless-stopped
 
   redis:
     image: redis:alpine
+    networks:
+      - agent_net
     restart: unless-stopped
 
 networks:
@@ -83,3 +118,5 @@ networks:
 volumes:
   ollama_data:
   chroma_data:
+  agent_sandbox:
+

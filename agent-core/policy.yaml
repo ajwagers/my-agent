@@ -1,0 +1,60 @@
+# Policy Engine Configuration
+# Zone rules, rate limits, approval settings, external service rules.
+# Mounted read-only into the container. Agent CANNOT modify this file.
+
+zones:
+  sandbox:
+    path: /sandbox
+    read: allow
+    write: allow
+    execute: allow
+
+  identity:
+    path: /agent
+    read: allow
+    write: requires_approval
+    execute: deny
+
+  system:
+    path: /app
+    read: allow
+    write: deny
+    execute: deny
+
+  external:
+    # Governed by check_http_access rules below
+    read: allow
+    write: requires_approval
+
+rate_limits:
+  default:
+    max_calls: 30
+    window_seconds: 60
+  web_search:
+    max_calls: 10
+    window_seconds: 60
+  code_exec:
+    max_calls: 20
+    window_seconds: 60
+  file_write:
+    max_calls: 15
+    window_seconds: 60
+
+approval:
+  timeout_seconds: 300  # 5 minutes, then auto-deny
+  redis_prefix: "approval"
+  pubsub_channel: "approvals:pending"
+
+external_access:
+  http_get: allow
+  http_post: requires_approval
+  http_put: requires_approval
+  http_delete: requires_approval
+
+  denied_url_patterns:
+    - ".*paypal\\.com.*"
+    - ".*stripe\\.com/v1/charges.*"
+    - ".*bank.*\\.com.*"
+    - ".*signup.*"
+    - ".*register.*"
+    - ".*billing.*"

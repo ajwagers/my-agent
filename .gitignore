@@ -1,6 +1,9 @@
 # Secrets — NEVER commit
 .env
 
+# Identity files (personal to each deployment — use .template files)
+agent-identity/*.md
+
 # Python
 __pycache__/
 *.pyc

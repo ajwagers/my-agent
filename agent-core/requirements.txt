@@ -1,6 +1,8 @@
 fastapi==0.115.0
 uvicorn==0.32.0
-ollama==0.3.3
-click==8.1.7
+ollama==0.3.3  # Ollama Python client
+click==8.1.7   # For CLI
 requests==2.32.3
-chromadb
+chromadb        # For RAG tool
+redis
+pyyaml
