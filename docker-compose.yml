@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  ollama-runner:
+    image: ollama/ollama:latest
+    container_name: ollama-runner
+    networks:
+      - agent_net
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  agent-core:
+    build: ./agent-core
+    container_name: agent-core
+    networks:
+      - agent_net
+    depends_on:
+      ollama-runner:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  telegram-gateway:
+    build: ./telegram-gateway
+    container_name: telegram-gateway
+    networks:
+      - agent_net
+    depends_on:
+      agent-core:
+        condition: service_healthy
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  chroma-rag:
+    image: chromadb/chroma:latest
+    container_name: chroma-rag
+    networks:
+      - agent_net
+    ports:
+      - "8100:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    command: chroma run --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+
+  web-ui:
+    build: ./web-ui
+    container_name: web-ui
+    networks:
+      - agent_net
+    ports:
+      - "8501:8501"
+    depends_on:
+      - agent-core
+      - chroma-rag
+    environment:
+      - AGENT_URL=http://agent-core:8000
+      - CHROMA_URL=http://chroma-rag:8000
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+
+networks:
+  agent_net:
+    driver: bridge
+
+volumes:
+  ollama_data:
+  chroma_data:

@@ -1,0 +1,4 @@
+#!/bin/bash
+# Wrapper to make "agent chat ..." work
+exec python /app/cli.py "$@"
+
