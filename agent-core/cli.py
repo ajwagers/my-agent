@@ -381,11 +381,87 @@ def bootstrap():
             print("\nShutting down.")
 
 
+@cli.command(name="bootstrap-reset")
+def bootstrap_reset():
+    """Emergency reset: wipe agent identity and start bootstrap from scratch.
+
+    Requires typing RESET at the confirmation prompt. Only runs from this
+    machine (bootstrap mode locks out Telegram and the web UI).
+    """
+    IDENTITY_FILES = ["SOUL.md", "IDENTITY.md", "USER.md"]
+
+    print("\n" + "=" * 60)
+    print("  !! EMERGENCY BOOTSTRAP RESET !!")
+    print("=" * 60)
+    print("\nThis will permanently delete the current agent identity:\n")
+
+    existing = [f for f in IDENTITY_FILES if os.path.isfile(os.path.join(IDENTITY_DIR, f))]
+    if existing:
+        for f in existing:
+            print(f"  - {IDENTITY_DIR}/{f}")
+    else:
+        print("  (no existing identity files found)")
+
+    print(
+        "\nThe agent will lose its name, personality, and all memory of you."
+        "\nTelegram and the web UI will be locked out until reset completes."
+        "\nThis cannot be undone.\n"
+    )
+
+    confirm = input("Type RESET to confirm, anything else to cancel: ").strip()
+    if confirm != "RESET":
+        print("\nCancelled. No files were changed.")
+        return
+
+    # Delete existing identity files
+    print("\nDeleting identity files...")
+    for filename in IDENTITY_FILES:
+        path = os.path.join(IDENTITY_DIR, filename)
+        if os.path.isfile(path):
+            os.remove(path)
+            print(f"  Deleted {filename}")
+
+    # Create BOOTSTRAP.md to activate bootstrap mode on the server
+    _write_identity_file(
+        "BOOTSTRAP.md",
+        "# Bootstrap\nEmergency reset in progress. New identity will be created via CLI.\n",
+    )
+    print("  Created BOOTSTRAP.md\n")
+
+    # Phase 1: collect identity + user info via form
+    identity, user = _phase1_form()
+    _write_phase1_files(identity, user)
+
+    # Start server if not already running (e.g. running outside Docker)
+    server_thread = None
+    if _wait_for_health(timeout=2):
+        print("\nServer already running.")
+    else:
+        server_thread = _start_server_thread()
+        print("\nWaiting for server to start...")
+        if not _wait_for_health():
+            print("ERROR: Server failed to start within 30 seconds.", file=sys.stderr)
+            sys.exit(1)
+
+    # Phase 2: soul conversation
+    if _phase2_soul(identity, user):
+        _complete_bootstrap(identity)
+
+    if server_thread:
+        print("Server is running. Press Ctrl+C to stop.")
+        try:
+            server_thread.join()
+        except KeyboardInterrupt:
+            print("\nShutting down.")
+
+
 @cli.command()
 def serve():
     """Start the FastAPI service."""
     if os.path.isfile(BOOTSTRAP_FILE):
-        print("Bootstrap mode detected. Use the web UI or 'bootstrap' command to complete setup.")
+        print("Bootstrap mode active. Run 'agent bootstrap' for first-run setup")
+        print("or 'agent bootstrap-reset' for an emergency identity reset.")
+        print("Both commands require the local CLI — Telegram and web UI are locked out.")
     subprocess.run(["python", "app.py"])
 
 

@@ -131,6 +131,14 @@ async def chat(request: ChatRequest):
     system_prompt = identity_module.build_system_prompt(loaded_identity)
     in_bootstrap = identity_module.is_bootstrap_mode()
 
+    # Bootstrap is CLI-only — lock out Telegram, web-ui, and any remote caller.
+    # Only 'agent bootstrap-reset' (channel="cli", local machine) may proceed.
+    if in_bootstrap and request.channel != "cli":
+        raise HTTPException(
+            status_code=403,
+            detail="Bootstrap mode is active. Use 'agent bootstrap-reset' from the local machine CLI.",
+        )
+
     # Truncate from the front to fit within token budget (always keep latest user message)
     # During bootstrap, skip truncation — let Ollama use the full num_ctx window
     if in_bootstrap:
