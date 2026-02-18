@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 AGENT_URL = os.getenv("AGENT_URL", "http://agent-core:8000")
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 YOUR_CHAT_ID = int(os.getenv("CHAT_ID", "0"))  # Set in .env
 
 # Redis connection for approval pub/sub
@@ -223,6 +224,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "user_id": str(chat_id),
                 "channel": "telegram",
             },
+            headers={"X-Api-Key": AGENT_API_KEY},
             timeout=None,
         )
         resp.raise_for_status()

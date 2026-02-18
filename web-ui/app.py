@@ -16,6 +16,8 @@ import requests
 st.set_page_config(layout="wide")
 
 AGENT_URL = os.getenv("AGENT_URL", "http://agent-core:8000")
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+_AUTH_HEADERS = {"X-Api-Key": AGENT_API_KEY}
 
 # Ensure the data directory exists
 if not os.path.exists("data"):
@@ -385,7 +387,7 @@ def bootstrap_chat(user_message):
         "channel": "web-ui",
         "model": os.getenv("BOOTSTRAP_MODEL", "mistral:latest"),
     }
-    resp = requests.post(f"{AGENT_URL}/chat", json=payload, timeout=120)
+    resp = requests.post(f"{AGENT_URL}/chat", json=payload, headers=_AUTH_HEADERS, timeout=120)
     return resp.json()
 
 
@@ -454,7 +456,7 @@ def bootstrap_ui():
                         "channel": "web-ui",
                         "auto_approve": True,
                     }
-                    resp = requests.post(f"{AGENT_URL}/chat", json=payload, timeout=60)
+                    resp = requests.post(f"{AGENT_URL}/chat", json=payload, headers=_AUTH_HEADERS, timeout=60)
                     data = resp.json()
                     st.session_state.bootstrap_messages.append(
                         {"role": "assistant", "content": data["response"]}

@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 from ollama import Client
 import asyncio
@@ -16,6 +17,16 @@ import tracing
 
 app = FastAPI()
 ollama_client = Client(host='http://ollama-runner:11434')
+
+# API key auth for /chat
+_api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
+
+def _require_api_key(api_key: str = Security(_api_key_header)):
+    expected = os.getenv("AGENT_API_KEY", "")
+    if not expected:
+        raise HTTPException(status_code=500, detail="AGENT_API_KEY not configured on server")
+    if not api_key or api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 # Redis connection
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
@@ -95,7 +106,7 @@ async def handle_bootstrap_proposal(filename: str, content: str, user_id: str):
         bootstrap.check_bootstrap_complete()
 
 
-@app.post("/chat")
+@app.post("/chat", dependencies=[Depends(_require_api_key)])
 async def chat(request: ChatRequest):
     user_id = request.user_id or "default"
     trace_id = tracing.new_trace(user_id=user_id, channel=request.channel or "")

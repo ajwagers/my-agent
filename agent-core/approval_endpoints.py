@@ -4,12 +4,27 @@ Approval REST endpoints — FastAPI APIRouter.
 Provides inspection and resolution endpoints for the approval system.
 telegram-gateway calls POST /approval/{id}/respond when the owner
 clicks Approve/Deny.
+
+POST /approval/{id}/respond requires an X-Api-Key header matching
+the AGENT_API_KEY environment variable.
 """
 
-from fastapi import APIRouter, HTTPException, Request
+import os
+from fastapi import APIRouter, Depends, HTTPException, Request, Security
+from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/approval", tags=["approval"])
+
+_api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
+
+
+def _require_api_key(api_key: str = Security(_api_key_header)):
+    expected = os.getenv("AGENT_API_KEY", "")
+    if not expected:
+        raise HTTPException(status_code=500, detail="AGENT_API_KEY not configured on server")
+    if not api_key or api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 class ApprovalResponse(BaseModel):
@@ -34,7 +49,7 @@ async def get_approval(approval_id: str, request: Request):
     return data
 
 
-@router.post("/{approval_id}/respond")
+@router.post("/{approval_id}/respond", dependencies=[Depends(_require_api_key)])
 async def respond_approval(
     approval_id: str, body: ApprovalResponse, request: Request
 ):

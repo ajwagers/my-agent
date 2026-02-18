@@ -12,6 +12,8 @@ IDENTITY_DIR = os.environ.get("IDENTITY_DIR", "/agent")
 BOOTSTRAP_FILE = os.path.join(IDENTITY_DIR, "BOOTSTRAP.md")
 BOOTSTRAP_MODEL = os.environ.get("BOOTSTRAP_MODEL", "mistral:latest")
 API_BASE = "http://localhost:8000"
+AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
+_AUTH_HEADERS = {"X-Api-Key": AGENT_API_KEY}
 
 
 def _wait_for_health(timeout=30):
@@ -69,7 +71,7 @@ def _chat(message, user_id="bootstrap-soul", model="deep"):
         "channel": "cli",
         "model": model,
     }
-    resp = requests.post(f"{API_BASE}/chat", json=payload, timeout=300)
+    resp = requests.post(f"{API_BASE}/chat", json=payload, headers=_AUTH_HEADERS, timeout=300)
     resp.raise_for_status()
     return resp.json()["response"]
 
@@ -339,7 +341,7 @@ def chat(message, model, reason, deep, session):
     }
     if model is not None:
         payload["model"] = model
-    resp = requests.post(f"{API_BASE}/chat", json=payload)
+    resp = requests.post(f"{API_BASE}/chat", json=payload, headers=_AUTH_HEADERS)
     data = resp.json()
     print(data["response"])
 
