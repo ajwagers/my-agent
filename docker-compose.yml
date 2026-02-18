@@ -83,7 +83,7 @@ services:
       - "8100:8000"  # Chroma UI
     volumes:
       - chroma_data:/chroma/chroma
-    command: chroma run --host 0.0.0.0 --port 8000
+    command: ["run", "--host", "0.0.0.0", "--port", "8000"]
     restart: 
         unless-stopped
 
@@ -104,6 +104,19 @@ services:
       - NUM_CTX=8192
     restart: 
         unless-stopped
+
+  dashboard:
+    build: ./dashboard
+    container_name: dashboard
+    networks:
+      - agent_net
+    ports:
+      - "8502:8502"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+    restart: unless-stopped
 
   redis:
     image: redis:alpine

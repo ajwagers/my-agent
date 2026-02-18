@@ -1,8 +1,8 @@
 # My-Agent: Product Requirements Document
 
-> **Last Updated:** 2026-02-16
+> **Last Updated:** 2026-02-17
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 partially complete (3A done; 3B, 3C not started). Next up: Chunk 3B (Observability), then Phase 4 (Skill Framework + Skills).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Next up: Phase 4 (Skill Framework + Skills).
 
 ---
 
@@ -58,6 +58,13 @@ The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a 
 │  │no host  │  │host:8501 │  │ or host)    │                     │
 │  │port     │  │          │  │             │                     │
 │  └─────────┘  └──────────┘  └─────────────┘                     │
+│                                                                 │
+│  ┌──────────────┐                                               │
+│  │  dashboard   │  Reads logs from Redis, probes service health │
+│  │ (Streamlit   │                                               │
+│  │  :8502)      │                                               │
+│  │ host:8502    │                                               │
+│  └──────────────┘                                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,6 +77,7 @@ The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a 
 | telegram-gateway | telegram-gateway | `./telegram-gateway` (build) | - | none | agent-core (healthy), redis |
 | chroma-rag | chroma-rag | `chromadb/chroma:latest` | 8000 | 8100 | - |
 | web-ui | web-ui | `./web-ui` (build) | 8501 | 8501 | agent-core, chroma-rag |
+| dashboard | dashboard | `./dashboard` (build) | 8502 | 8502 | redis |
 | redis | redis | `redis:alpine` | 6379 | none | - |
 
 ### Volume Mounts
@@ -153,7 +161,8 @@ User input (Telegram / Web UI / CLI)
       → Prepend system prompt + send history + new message to Ollama
       → If bootstrap mode: extract file proposals, validate, send through approval gate
       → Save updated history to Redis
-  → Response JSON: { response: "...", model: "<model used>" }
+      → Structured tracing: log_chat_request() + log_chat_response() with Ollama metrics
+  → Response JSON: { response: "...", model: "<model used>", trace_id: "<16-char hex>" }
 ← Frontend displays response to user
 ```
 
@@ -176,20 +185,21 @@ User input (Telegram / Web UI / CLI)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system & bootstrap)**
+**Status: WORKING (with policy engine, identity system, bootstrap & structured tracing)**
 
-The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, and conversational bootstrap.
+The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, and structured JSON tracing.
 
 **Files:**
 
 | File | Purpose |
 |---|---|
-| `app.py` | FastAPI service with `/chat`, `/health`, `/bootstrap/status`, `/chat/history/{user_id}`, `/policy/reload`, `/approval/*` endpoints. Integrates identity loading, bootstrap proposal handling, and approval gates. |
+| `app.py` | FastAPI service with `/chat`, `/health`, `/bootstrap/status`, `/chat/history/{user_id}`, `/policy/reload`, `/approval/*` endpoints. Integrates identity loading, bootstrap proposal handling, approval gates, and structured tracing. |
 | `cli.py` | Click CLI with `chat` (supports `--model`, `--reason`/`-r`, `--session`) and `serve` commands |
 | `tools.py` | Tool definitions (stub only, not wired in — sandbox paths updated to `/sandbox`) |
+| `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval, sanitization, query helper for dashboard |
 | `policy.yaml` | Zone rules, rate limits, approval settings, denied URL patterns (mounted read-only) |
 | `policy.py` | Central policy engine: 4-zone model, hard-coded deny-list, rate limiting, access checks |
-| `approval.py` | Approval gate manager: Redis hash storage, pub/sub notifications, async wait, timeout, proposed_content support |
+| `approval.py` | Approval gate manager: Redis hash storage, pub/sub notifications, async wait, timeout, proposed_content support, tracing hooks |
 | `approval_endpoints.py` | FastAPI router for approval inspection and resolution |
 | `identity.py` | Identity file loader: reads SOUL.md, IDENTITY.md, USER.md, AGENTS.md, BOOTSTRAP.md from `/agent`. Builds composite system prompt. Detects bootstrap mode. Hot-reloads on every request. |
 | `bootstrap.py` | Bootstrap proposal parser: extracts `<<PROPOSE:FILE.md>>` markers from LLM output, validates filenames and content, checks bootstrap completion, deletes BOOTSTRAP.md when done |
@@ -197,13 +207,13 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `agent` | Shell wrapper (`#!/bin/bash`) so `agent chat "msg"` works on PATH |
 | `Dockerfile` | Python 3.12, installs deps, copies CLI to `/usr/local/bin/agent` |
 | `requirements.txt` | fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml |
-| `tests/` | Unit tests (policy, approval, identity, bootstrap), runnable without Docker |
+| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing), runnable without Docker |
 
 **API Endpoints:**
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/chat` | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt, routes to ChromaDB or Ollama, handles bootstrap proposals. Returns `{ response, model }`. |
+| POST | `/chat` | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt, routes to ChromaDB or Ollama, handles bootstrap proposals. Returns `{ response, model, trace_id }`. |
 | GET | `/health` | Returns `{"status": "healthy"}`. Used by Docker healthcheck and dependent services. |
 | GET | `/bootstrap/status` | Returns `{"bootstrap": true/false}`. Checks if BOOTSTRAP.md exists. |
 | GET | `/chat/history/{user_id}` | Retrieve conversation history for a session from Redis. |
@@ -307,7 +317,38 @@ Streamlit-based chat UI with RAG capabilities.
 
 **Note:** The web UI talks directly to Ollama via LangChain (not through agent-core) for chat. It uses agent-core's AGENT_URL env var but doesn't currently call it. This is a design inconsistency — ideally all chat should route through agent-core.
 
-### 3.6 redis
+### 3.6 dashboard
+
+**Status: WORKING**
+
+Streamlit-based health dashboard providing real-time operational visibility.
+
+**Files:**
+
+| File | Purpose |
+|---|---|
+| `app.py` | Streamlit app with 5 panels: System Health, Activity, Queue & Jobs, Recent Activity Feed, Security & Audit. Auto-refreshes every 10s. |
+| `redis_queries.py` | Redis data access: log queries, activity aggregation, approval scanning, security event filtering |
+| `health_probes.py` | HTTP health probes for all 6 services (3s timeout each) |
+| `Dockerfile` | Python 3.12-slim, Streamlit on port 8502 |
+| `requirements.txt` | streamlit, redis, requests |
+| `tests/` | 31 unit tests (redis queries + health probes), no Docker needed |
+
+**Features:**
+- Green/yellow/red status indicators for each service
+- Ollama shows loaded models, Redis shows memory usage, ChromaDB shows collection count
+- Request counts (24h and 1h), broken down by channel with bar charts
+- Skill execution counts with bar charts
+- Average response time per model
+- Policy decision summary (allowed/denied/needs approval)
+- Pending approval queue display
+- Filterable activity feed (by event type, count, channel)
+- Security panel: policy denials + approval history
+- Auto-refresh configurable via `REFRESH_INTERVAL` env var (default 10s)
+
+**Access:** `http://localhost:8502`
+
+### 3.7 redis
 
 **Status: WORKING**
 
@@ -316,6 +357,7 @@ Streamlit-based chat UI with RAG capabilities.
 - `restart: unless-stopped`
 - Used by agent-core for conversation history storage (per user_id session keys)
 - Used by agent-core + telegram-gateway for approval gate (hash storage + pub/sub)
+- Used by agent-core for structured log storage (`logs:all` firehose + `logs:chat`, `logs:skill`, `logs:policy`, `logs:approval` type-specific lists)
 - Intended future use: job queue, scheduled tasks, memory state
 
 ---
@@ -333,9 +375,10 @@ my-agent/
 │   ├── app.py                  # FastAPI: /chat, /health, /bootstrap/status, /chat/history, /policy/reload, /approval/*
 │   ├── cli.py                  # Click CLI: chat, serve commands
 │   ├── tools.py                # Tool definitions (STUB - not wired in)
+│   ├── tracing.py              # Structured JSON tracing: context vars, event emitters, Redis log storage
 │   ├── policy.yaml             # Zone rules, rate limits, approval config (read-only mount)
 │   ├── policy.py               # Central policy engine (zones, deny-list, rate limits)
-│   ├── approval.py             # Approval gate manager (Redis hash + pub/sub + proposed_content)
+│   ├── approval.py             # Approval gate manager (Redis hash + pub/sub + proposed_content + tracing hooks)
 │   ├── approval_endpoints.py   # REST router: /approval/pending, /{id}, /{id}/respond
 │   ├── identity.py             # Identity file loader, system prompt builder, bootstrap detection
 │   ├── bootstrap.py            # Bootstrap proposal parser, validator, completion checker
@@ -343,11 +386,13 @@ my-agent/
 │   ├── agent                   # Shell wrapper for CLI on PATH
 │   └── tests/
 │       ├── __init__.py
-│       ├── conftest.py         # FakeRedis mock, policy_engine & approval_manager fixtures
+│       ├── conftest.py         # FakeRedis mock (with list ops), policy_engine & approval_manager fixtures
 │       ├── test_policy.py      # 51 tests: deny-list, zones, external access, rate limits
 │       ├── test_approval.py    # 13 tests: create, resolve, timeout, get_pending
 │       ├── test_identity.py    # Identity loader tests: bootstrap detection, file loading, prompt building
-│       └── test_bootstrap.py   # Bootstrap parser tests: proposal extraction, validation, completion, approval integration
+│       ├── test_bootstrap.py   # Bootstrap parser tests: proposal extraction, validation, completion, approval integration
+│       └── test_tracing.py     # 49 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization
+│
 │
 ├── agent-identity/             # Bind-mounted to /agent in container (Zone 2)
 │   ├── SOUL.md                 # Agent personality prompt (written during bootstrap)
@@ -360,6 +405,18 @@ my-agent/
 │   ├── requirements.txt        # python-telegram-bot, requests, redis
 │   └── bot.py                  # Telegram bot: greeting, typing, chunking, approval callbacks
 │
+├── dashboard/
+│   ├── Dockerfile              # Python 3.12-slim, Streamlit on port 8502
+│   ├── requirements.txt        # streamlit, redis, requests
+│   ├── app.py                  # Health dashboard: 5 panels, auto-refresh
+│   ├── redis_queries.py        # Redis data access & aggregation layer
+│   ├── health_probes.py        # HTTP health probes for all services
+│   └── tests/
+│       ├── __init__.py
+│       ├── conftest.py         # FakeRedis fixture
+│       ├── test_redis_queries.py  # 20 tests: log queries, activity stats, approvals, security events
+│       └── test_health_probes.py  # 11 tests: healthy/unhealthy probes for each service
+│
 ├── web-ui/
 │   ├── Dockerfile              # Python 3.12-slim + system deps
 │   ├── requirements.txt        # streamlit, langchain, chromadb
@@ -369,8 +426,10 @@ my-agent/
 │
 ├── SETUP_GUIDE.md              # Full setup walkthrough for new users (Phase 1 stack)
 ├── SETUP_GUIDE_2.md            # Policy engine, guardrails & identity bootstrap setup guide
+├── SETUP_GUIDE_3.md            # Observability & structured tracing setup guide
 ├── VIDEO_OUTLINE.md            # YouTube video 1 outline (foundation stack)
 ├── VIDEO_OUTLINE_2.md          # YouTube video 2 outline (guardrails + identity/bootstrap)
+├── VIDEO_OUTLINE_3.md          # YouTube video 3 outline (observability + tracing)
 └── PRD.md                      # This document
 ```
 
@@ -408,7 +467,7 @@ The roadmap is designed to reach feature parity with Openclaw's core architectur
 | Model-agnostic / brain-vs-muscle routing | Multi-model Ollama + keyword-based auto-routing (`route_model()`) | 2 (done) |
 | Soul / Persona file | Conversational bootstrap (Openclaw-inspired) with policy-gated file writes. SOUL.md, IDENTITY.md, USER.md co-authored by agent + owner. | 2A (done) |
 | Conversation memory | Redis rolling history per user/session | 2 (done) |
-| Policy, guardrails, observability | Four-zone permission model, approval gates, rate limits, structured tracing, health dashboard. **Built before soul/bootstrap.** | 3A (done) |
+| Policy, guardrails, observability | Four-zone permission model, approval gates, rate limits, structured tracing, health dashboard. **Built before soul/bootstrap.** | 3A (done), 3B (done) |
 | Modular skill system | Local `skills/` directory, hand-built or vetted, no external marketplaces. Each skill enforces its own security. | 4A |
 | First skills (search, files, RAG) | Web search, URL fetch, file read/write, PDF parse, RAG retrieval. Secret broker for API keys. | 4B |
 | Memory & scheduled tasks | Persistent memory with sanitization layer, heartbeat/cron, task management. | 4C |
@@ -538,37 +597,23 @@ Inspired by Openclaw's agent bootstrapping model, the agent's identity is co-aut
 
 ---
 
-#### Chunk 2B: Conversation Memory (Redis)
+#### Chunk 2B: Conversation Memory (Redis) ✅
 
-**Priority: HIGH — The single biggest functional improvement.**
+**Status: COMPLETE**
 
-Currently every `/chat` call is stateless. The agent has no idea what you said 10 seconds ago. This chunk wires Redis into agent-core to maintain rolling conversation history.
+Redis-backed conversation memory gives the agent persistent context across messages and container restarts.
 
-**Scope:**
-- Add `redis` pip package to `agent-core/requirements.txt`
-- Add `networks: [agent_net]` to redis service in `docker-compose.yml`
-- In `agent-core/app.py`:
-  - Connect to Redis at `redis:6379`
-  - On each `/chat` request, load message history for the `user_id` (or generate a session ID if none provided)
-  - Prepend the soul/system prompt
-  - Append the new user message to history
-  - Send the full message list (system prompt + history + new message) to Ollama
-  - Append the assistant response to history
-  - Implement a truncation strategy (e.g., keep last N messages, or trim to fit context window)
-  - Add a TTL or max-length so sessions don't grow forever
-- Update `ChatRequest` to make `user_id` more prominent (maybe default to channel + chat_id)
-- Telegram gateway already sends `user_id` and `channel` — no changes needed there
-- CLI should pass a `user_id` (e.g., `"cli-default"`) and optionally a `--session` flag
+**What was implemented:**
+- `redis` package added to `agent-core/requirements.txt`, `networks: [agent_net]` added to redis service in `docker-compose.yml`
+- `agent-core/app.py` — Redis connection at startup (`redis.from_url()`). Per-user session keys (`chat:{user_id}`). On each `/chat` request: load history from Redis, append user message, send full history to Ollama, append assistant response, save back to Redis. History stored as a single JSON blob (list of `{role, content}` objects).
+- Token-budget truncation — `HISTORY_TOKEN_BUDGET` env var (default 6000 tokens). Oldest messages are dropped from the front to fit within budget. Truncation is skipped during bootstrap mode to preserve full conversation context.
+- `ChatRequest` schema includes `user_id` (defaults to `"default"`) and `channel` fields. Telegram gateway already sends both. CLI passes `user_id` via `--session` flag.
+- `/chat/history/{user_id}` endpoint added to retrieve conversation history.
 
-**Key decisions:**
-- Message history format in Redis (list of JSON objects? single JSON blob?)
-- Max history length (token-based or message-count-based?)
-- Session TTL (expire after N hours of inactivity?)
-
-**Test criteria:**
-- Send "My name is Andy" via CLI, then send "What is my name?" — agent should remember
-- Same test via Telegram
-- Restart agent-core container — history should persist (Redis has its own persistence)
+**Key decisions made:**
+- Single JSON blob per session (not a Redis list) — simpler to load/save, token truncation operates on the full list
+- Token-based truncation (not message-count) — respects the context window regardless of message length
+- No session TTL yet — sessions persist indefinitely in Redis (planned for future cleanup)
 
 ---
 
@@ -621,6 +666,8 @@ Openclaw users run a strong reasoning model for planning and a cheaper/faster mo
 > Openclaw equivalents: Policy, guardrails, observability.
 >
 > **Why this comes before everything else:** Openclaw's approach is to add capabilities first and bolt on safety later. We invert that completely. Chunk 3A was the first thing built — before the soul file, before the bootstrap conversation, before any skill. The guardrail framework exists before the agent gets its personality. Chunk 2A (Soul/Bootstrap) is the first consumer of the policy engine.
+>
+> **Current status:** 3A (Policy Engine), 3B (Observability & Tracing), and 3C (Health Dashboard) are complete. 3D (Container Hardening) and 3E (Multi-Tenant) are deferred. Next up: Phase 4 (Skill Framework + Skills).
 
 #### Chunk 3A: Policy Engine & Guardrails ✅
 
@@ -634,7 +681,7 @@ The policy engine enforces the four-zone permission model. Every action the agen
 - `agent-core/skill_contract.py` — Abstract `SkillBase` class with `SkillMetadata` dataclass. Interface for all future skills: `validate()`, `execute()`, `sanitize_output()`.
 - `agent-core/approval.py` — `ApprovalManager` class: Redis hash storage at `approval:{uuid}`, pub/sub on `approvals:pending` channel, 5-minute auto-deny timeout, double-resolve protection, startup catch-up.
 - `agent-core/approval_endpoints.py` — REST router: `GET /approval/pending`, `GET /approval/{id}`, `POST /approval/{id}/respond`.
-- `agent-core/tests/` — 64 unit tests (51 policy + 13 approval), all passing, no Docker needed. Covers: deny-list patterns, zone enforcement, symlink escape, external access, rate limiting, approval lifecycle, timeout.
+- `agent-core/tests/` — 158 unit tests total (51 policy + 13 approval + 20 identity + 25 bootstrap + 49 tracing), all passing, no Docker needed. Covers: deny-list patterns, zone enforcement, symlink escape, external access, rate limiting, approval lifecycle, timeout, structured tracing, sanitization, retention.
 - `telegram-gateway/bot.py` — Updated with Redis subscription, InlineKeyboardMarkup for Approve/Deny, callback handler, startup catch-up for missed approvals.
 - `docker-compose.yml` — Volumes: `agent_sandbox:/sandbox`, `agent_identity:/agent`, `policy.yaml:ro`. telegram-gateway now depends on Redis.
 
@@ -642,67 +689,53 @@ The policy engine enforces the four-zone permission model. Every action the agen
 
 ---
 
-#### Chunk 3B: Observability & Structured Tracing
+#### Chunk 3B: Observability & Structured Tracing ✅
 
-**Priority: HIGH**
+**Status: COMPLETE**
 
-**Scope:**
-- Implement structured JSON logging for all agent activity in `agent-core/tracing.py`:
-  - Every `/chat` request: timestamp, user_id, channel, message (truncated), model used
-  - Every skill call: skill name, parameters (sanitized), result (truncated), duration_ms, success/failure
-  - Every policy decision: what was checked, what was allowed/denied, why
-  - Every approval gate event: requested, approved/denied, by whom, response time
-- Use Python `logging` with JSON formatter — no heavy dependencies needed initially
-- Log to stdout (Docker captures it) AND to a Redis list for the dashboard to read
-- Per-request trace IDs so you can follow a single user message through the entire skill chain
-- Cost/latency metrics per model (tokens in, tokens out, time to first token, total time)
+Structured JSON tracing for every agent action. Every `/chat` request, skill call, policy decision, and approval event is logged to both stdout (Docker captures) and Redis lists (dashboard reads). Per-request trace IDs correlate all events within a single request.
 
-**Test criteria:**
-- A `/chat` request produces a structured JSON log line with all required fields
-- Skill calls within a request share the same trace ID
-- Logs are queryable from Redis by the dashboard
+**What was built:**
+- `agent-core/tracing.py` — Core tracing module (~240 lines): `contextvars`-based trace ID propagation (`_trace_id`, `_user_id`, `_channel`), `JSONFormatter` for single-line JSON stdout output, dual-push to Redis (`logs:all` firehose + `logs:<type>` per event type), count-based retention via `LTRIM` (1000 entries for `logs:all`, 500 per type list), 5 public event emitters (`log_chat_request()`, `log_chat_response()`, `log_skill_call()`, `log_policy_decision()`, `log_approval_event()`), `_sanitize()` for redacting sensitive keys (password, token, secret, api_key), `_truncate()` for capping field length, `get_recent_logs()` query helper for the dashboard. All Redis writes wrapped in try/except — tracing never crashes a request.
+- `agent-core/app.py` — Wired tracing: `setup_logging(redis_client)` at startup, `new_trace()` at `/chat` entry, `log_chat_request()` after model routing, `log_chat_response()` with Ollama metrics (`eval_count`, `prompt_eval_count`, `total_duration`). All 3 `print()` statements replaced with structured JSON logs. `trace_id` added to `/chat` response JSON.
+- `agent-core/approval.py` — Tracing hooks: `log_approval_event(action=..., status="pending")` in `create_request()`, `log_approval_event(action=status, response_time_ms=...)` in `resolve()`. Uses lazy `from tracing import log_approval_event` with `try/except ImportError` for independence.
+- `agent-core/tests/conftest.py` — FakeRedis extended with `_lists` dict and `lpush()`, `ltrim()`, `lrange()`, `llen()` methods. `keys()` and `delete()` updated to include list keys.
+- `agent-core/tests/test_tracing.py` — 49 tests across 10 test classes: `TestTraceContext` (5), `TestJSONFormatter` (3), `TestChatLogging` (6), `TestSharedTraceID` (3), `TestSkillLogging` (2), `TestPolicyLogging` (3), `TestApprovalLogging` (4), `TestRedisQueryable` (5), `TestRetention` (3), `TestRedisResilience` (4), `TestSanitization` (11). All passing.
+
+**Design decisions made:**
+- **Trace ID flow:** `contextvars.ContextVar` — set once at request entry, automatically available downstream without threading through parameters
+- **Redis key structure:** Dual-push to `logs:all` (firehose) AND type-specific lists (`logs:chat`, `logs:skill`, `logs:policy`, `logs:approval`) for efficient dashboard querying
+- **Retention:** Count-based via `LTRIM` — 1000 for `logs:all`, 500 per type list. Simple, predictable memory usage.
+- **No new dependencies:** Uses only Python stdlib (`logging`, `contextvars`, `json`, `uuid`, `time`)
+- **Redis resilience:** All Redis writes wrapped in try/except. If Redis is down, stdout log still succeeds. Tracing never crashes a request.
+- **`print()` replacement:** All 3 print statements in `app.py` replaced with structured JSON. `cli.py` prints stay (user-facing CLI output).
+
+**Full details:** See `SETUP_GUIDE_3.md` and `VIDEO_OUTLINE_3.md`.
 
 ---
 
-#### Chunk 3C: Health Dashboard
+#### Chunk 3C: Health Dashboard ✅
 
-**Priority: HIGH — Gives the owner real-time visibility into what the agent is doing.**
+**Status: COMPLETE**
 
-A dedicated dashboard page (Streamlit or lightweight web app) that shows the operational state of the entire agent stack at a glance.
+A dedicated Streamlit dashboard (separate service on port 8502) showing the operational state of the entire agent stack at a glance. Auto-refreshes every 10 seconds.
 
-**Scope:**
-- New service: `dashboard/` (Streamlit app on port 8502, or a new page in the existing web-ui)
-- **System Health Panel:**
-  - Live status of each service (agent-core, ollama-runner, chroma-rag, redis, telegram-gateway, web-ui) — green/yellow/red based on healthcheck
-  - Container uptime, restart count
-  - Ollama model(s) loaded, memory usage
-  - Redis connection status, memory usage
-  - ChromaDB collection count, document count
-- **Activity Panel:**
-  - Total requests today / this hour / this session
-  - Requests by channel (Telegram, CLI, Web UI) — bar chart or counters
-  - Skill execution counts by skill name — how many times each skill was called
-  - Success/failure rates per skill
-  - Average response time per model
-- **Queue & Jobs Panel** (ready for Phase 5, shows empty until then):
-  - Pending items in the job queue
-  - Running jobs with progress/status
-  - Recently completed jobs with results
-  - Scheduled jobs and next fire time
-- **Recent Activity Feed:**
-  - Live tail of recent agent actions (last 50-100 entries)
-  - Each entry: timestamp, channel, user, action taken, skill(s) called, duration
-  - Filterable by channel, skill, time range
-- **Security & Audit Panel:**
-  - Denied actions (policy rejections, deny-list hits)
-  - Approval gate history (requested, approved, denied)
-  - Rate limit events
-  - Any errors or anomalies
+**What was built:**
+- `dashboard/app.py` — Streamlit dashboard (~220 lines) with 5 panels: System Health (service status with green/yellow/red indicators), Activity (request counts, channel breakdown, skill calls, response times, policy decisions), Queue & Jobs (placeholder for Phase 5 + pending approvals), Recent Activity Feed (filterable log tail), Security & Audit (policy denials + approval history).
+- `dashboard/redis_queries.py` — Redis data access layer (~130 lines): `get_recent_logs()` (mirrors `tracing.get_recent_logs()` independently), `count_logs_by_type()`, `get_activity_stats()` (aggregates from `logs:all` firehose — requests by channel, skill counts, avg response time by model, policy decisions), `get_pending_approvals()` (scans `approval:*` hashes), `get_approval_history()`, `get_security_events()` (combines policy denials with approval timeouts/denials).
+- `dashboard/health_probes.py` — HTTP health probes (~90 lines) with 3s timeout for each service: agent-core (`/health`), Ollama (`/api/tags` — extracts loaded models), ChromaDB (`/api/v1/heartbeat` + collection count), Redis (ping + memory info), web-ui (`/_stcore/health`), telegram-gateway (always "unknown" — no health endpoint).
+- `dashboard/Dockerfile` — Python 3.12-slim, matches web-ui pattern.
+- `dashboard/requirements.txt` — streamlit, redis, requests (minimal dependencies).
+- `dashboard/tests/` — 31 unit tests (20 redis_queries + 11 health_probes), all passing without Docker.
+- `docker-compose.yml` — Added `dashboard` service on port 8502, depends on redis only.
 
-**Key decisions:**
-- Separate Streamlit app vs. new tab in existing web-ui (separate is cleaner, avoids bloating the chat UI)
-- Data retention period for dashboard metrics (24 hours? 7 days?)
-- Authentication for the dashboard (initially none — it's on localhost only)
+**Design decisions made:**
+- **Separate service** (not a page in web-ui) — cleaner separation, avoids bloating the chat UI
+- **HTTP probes** (not Docker socket) — simpler, no additional security surface
+- **Auto-refresh via `time.sleep()` + `st.rerun()`** — standard Streamlit dashboard pattern, configurable via `REFRESH_INTERVAL` env var
+- **No authentication** — localhost only, consistent with the rest of the stack
+- **Dashboard depends only on Redis** — starts even if other services are booting, correctly shows them as unhealthy
+- **Activity stats aggregate from `logs:all` (up to 1000 entries)** — bounded, fast, no new Redis data structures needed
 
 **Test criteria:**
 - Dashboard shows green status for all running services

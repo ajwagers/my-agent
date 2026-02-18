@@ -98,6 +98,19 @@ class ApprovalManager:
 
         self.redis.publish(self.channel, json.dumps(notification))
 
+        try:
+            from tracing import log_approval_event
+            log_approval_event(
+                approval_id=approval_id,
+                action=action,
+                zone=zone,
+                risk_level=risk_level,
+                status="pending",
+                description=description,
+            )
+        except ImportError:
+            pass
+
         return approval_id
 
     async def wait_for_resolution(
@@ -139,11 +152,30 @@ class ApprovalManager:
         if current.get("status") != "pending":
             return False  # Already resolved — reject double-resolve
 
+        resolved_at = time.time()
         self.redis.hset(key, mapping={
             "status": status,
-            "resolved_at": str(time.time()),
+            "resolved_at": str(resolved_at),
             "resolved_by": resolved_by,
         })
+
+        try:
+            from tracing import log_approval_event
+            created_at = float(current.get("created_at", 0))
+            response_time_ms = (resolved_at - created_at) * 1000 if created_at else 0
+            log_approval_event(
+                approval_id=approval_id,
+                action=status,
+                zone=current.get("zone", ""),
+                risk_level=current.get("risk_level", ""),
+                status=status,
+                description=current.get("description", ""),
+                response_time_ms=response_time_ms,
+                resolved_by=resolved_by,
+            )
+        except ImportError:
+            pass
+
         return True
 
     def get_request(self, approval_id: str) -> Optional[dict]:

@@ -16,11 +16,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 class FakeRedis:
-    """In-memory mock of redis-py, supporting hash ops and pub/sub."""
+    """In-memory mock of redis-py, supporting hash ops, list ops, and pub/sub."""
 
     def __init__(self):
         self._data: Dict[str, Any] = {}
         self._hashes: Dict[str, Dict[str, str]] = {}
+        self._lists: Dict[str, List[str]] = {}
         self._subscribers: Dict[str, List] = {}
         self._lock = threading.Lock()
 
@@ -35,6 +36,7 @@ class FakeRedis:
         for k in keys:
             self._data.pop(k, None)
             self._hashes.pop(k, None)
+            self._lists.pop(k, None)
 
     # -- Hash ops --
     def hset(self, name: str, mapping: Optional[Dict] = None, **kwargs) -> None:
@@ -53,6 +55,28 @@ class FakeRedis:
         h = self._hashes.get(name, {})
         return h.get(key)
 
+    # -- List ops --
+    def lpush(self, name: str, *values: str) -> int:
+        if name not in self._lists:
+            self._lists[name] = []
+        for v in values:
+            self._lists[name].insert(0, v)
+        return len(self._lists[name])
+
+    def ltrim(self, name: str, start: int, end: int) -> None:
+        if name in self._lists:
+            self._lists[name] = self._lists[name][start:end + 1]
+
+    def lrange(self, name: str, start: int, end: int) -> List[str]:
+        if name not in self._lists:
+            return []
+        if end == -1:
+            return list(self._lists[name][start:])
+        return list(self._lists[name][start:end + 1])
+
+    def llen(self, name: str) -> int:
+        return len(self._lists.get(name, []))
+
     # -- Pub/Sub --
     def publish(self, channel: str, message: str) -> int:
         with self._lock:
@@ -67,7 +91,7 @@ class FakeRedis:
     # -- Key scanning --
     def keys(self, pattern: str = "*") -> List[str]:
         import fnmatch
-        all_keys = list(self._data.keys()) + list(self._hashes.keys())
+        all_keys = list(self._data.keys()) + list(self._hashes.keys()) + list(self._lists.keys())
         return [k for k in all_keys if fnmatch.fnmatch(k, pattern)]
 
     def expire(self, name: str, seconds: int) -> None:

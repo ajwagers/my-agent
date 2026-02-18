@@ -12,6 +12,7 @@ from approval import ApprovalManager
 from approval_endpoints import router as approval_router
 import identity as identity_module
 import bootstrap
+import tracing
 
 app = FastAPI()
 ollama_client = Client(host='http://ollama-runner:11434')
@@ -19,6 +20,9 @@ ollama_client = Client(host='http://ollama-runner:11434')
 # Redis connection
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+# Structured logging
+tracing.setup_logging(redis_client=redis_client)
 
 # Policy engine & approval manager
 policy_engine = PolicyEngine(config_path="policy.yaml", redis_client=redis_client)
@@ -94,20 +98,18 @@ async def handle_bootstrap_proposal(filename: str, content: str, user_id: str):
 @app.post("/chat")
 async def chat(request: ChatRequest):
     user_id = request.user_id or "default"
-    print(f"[{request.channel}:{user_id}] {request.message}")
+    trace_id = tracing.new_trace(user_id=user_id, channel=request.channel or "")
 
     if "search docs" in request.message.lower():
         docs = rag_tool(request.message)
-        return {"response": "\n".join(docs)}
+        return {"response": "\n".join(docs), "trace_id": trace_id}
 
     # Build session key and load history
     session_key = f"chat:{user_id}"
     try:
         raw = redis_client.get(session_key)
         history = json.loads(raw) if raw else []
-        print(f"  → Redis loaded {len(history)} messages (key={session_key}, raw_len={len(raw) if raw else 0})")
-    except Exception as e:
-        print(f"  ⚠ Redis read failed for {session_key}: {e}")
+    except Exception:
         history = []
 
     # Append new user message
@@ -132,7 +134,10 @@ async def chat(request: ChatRequest):
 
     # Route to the appropriate model
     model = route_model(request.message, request.model)
-    print(f"  → model: {model}  bootstrap: {in_bootstrap}")
+
+    tracing.log_chat_request(
+        request.message, model=model, bootstrap=in_bootstrap,
+    )
 
     # Send to Ollama with system prompt (use larger context for deep model)
     ctx = DEEP_NUM_CTX if model == DEEP_MODEL else NUM_CTX
@@ -142,6 +147,18 @@ async def chat(request: ChatRequest):
         options={"num_ctx": ctx},
     )
     assistant_content = response['message']['content']
+
+    # Extract Ollama metrics for tracing
+    eval_count = response.get("eval_count", 0)
+    prompt_eval_count = response.get("prompt_eval_count", 0)
+    total_duration = response.get("total_duration", 0)
+    tracing.log_chat_response(
+        model=model,
+        response_preview=assistant_content,
+        eval_count=eval_count,
+        prompt_eval_count=prompt_eval_count,
+        total_duration_ms=total_duration / 1_000_000 if total_duration else 0,
+    )
 
     # In bootstrap mode, check for file proposals
     if in_bootstrap:
@@ -166,7 +183,7 @@ async def chat(request: ChatRequest):
     history.append({"role": "assistant", "content": assistant_content})
     redis_client.set(session_key, json.dumps(history))
 
-    return {"response": assistant_content, "model": model}
+    return {"response": assistant_content, "model": model, "trace_id": trace_id}
 
 @app.get("/health")
 async def health():
