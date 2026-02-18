@@ -13,6 +13,7 @@ import tracing
 from tracing import (
     JSONFormatter,
     _sanitize,
+    _scrub_url_credentials,
     _truncate,
     get_recent_logs,
     get_trace_id,
@@ -476,3 +477,36 @@ class TestSanitization:
     def test_truncate_non_string(self):
         assert _truncate(42) == 42
         assert _truncate(None) is None
+
+    def test_redact_authorization_header(self):
+        result = _sanitize({"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9..."})
+        assert result["Authorization"] == "***REDACTED***"
+
+    def test_redact_x_api_key_header(self):
+        result = _sanitize({"x-api-key": "sk-live-abc123"})
+        assert result["x-api-key"] == "***REDACTED***"
+
+    def test_scrub_url_credentials_basic(self):
+        url = "https://user:p4ssword@example.com/path"
+        result = _scrub_url_credentials(url)
+        assert result == "https://***REDACTED***@example.com/path"
+        assert "p4ssword" not in result
+        assert "user" not in result
+
+    def test_scrub_url_credentials_no_match(self):
+        url = "https://example.com/path?q=hello"
+        assert _scrub_url_credentials(url) == url
+
+    def test_scrub_url_in_dict_value(self):
+        result = _sanitize({"endpoint": "https://admin:s3cr3t@host.internal/api"})
+        assert "***REDACTED***" in result["endpoint"]
+        assert "admin" not in result["endpoint"]
+        assert "s3cr3t" not in result["endpoint"]
+
+    def test_response_preview_url_credentials_scrubbed(self, traced_redis):
+        new_trace()
+        preview = "Fetched data from https://svc:tok3n@api.example.com/v1/data"
+        result = log_chat_response(model="phi3", response_preview=preview)
+        entry = json.loads(result)
+        assert "tok3n" not in entry["response_preview"]
+        assert "***REDACTED***" in entry["response_preview"]

@@ -13,6 +13,7 @@ Redis key structure:
 import contextvars
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any, Optional
@@ -34,8 +35,14 @@ _logger: Optional[logging.Logger] = None
 ALL_LOG_LIMIT = 1000
 TYPE_LOG_LIMIT = 500
 
-# Sensitive key patterns to redact
-_SENSITIVE_KEYS = {"password", "token", "secret", "api_key", "apikey", "api_secret"}
+# Sensitive key patterns to redact (case-insensitive match on dict keys)
+_SENSITIVE_KEYS = {
+    "password", "token", "secret", "api_key", "apikey", "api_secret",
+    "authorization", "x-api-key",
+}
+
+# Regex for embedded URL credentials: scheme://user:pass@host
+_URL_CREDS_RE = re.compile(r"://[^:@\s]+:[^@\s]+@")
 
 # Max length for truncated fields
 _MAX_FIELD_LEN = 200
@@ -126,7 +133,7 @@ def get_trace_context() -> dict:
 # Sanitization helpers
 # ---------------------------------------------------------------------------
 def _sanitize(params: dict) -> dict:
-    """Redact sensitive keys from a parameter dict (shallow copy)."""
+    """Redact sensitive keys and scrub URL credentials from a parameter dict."""
     if not params:
         return params
     result = {}
@@ -135,6 +142,8 @@ def _sanitize(params: dict) -> dict:
             result[k] = "***REDACTED***"
         elif isinstance(v, dict):
             result[k] = _sanitize(v)
+        elif isinstance(v, str):
+            result[k] = _scrub_url_credentials(v)
         else:
             result[k] = v
     return result
@@ -145,6 +154,11 @@ def _truncate(value: Any, max_len: int = _MAX_FIELD_LEN) -> Any:
     if isinstance(value, str) and len(value) > max_len:
         return value[:max_len] + "..."
     return value
+
+
+def _scrub_url_credentials(value: str) -> str:
+    """Remove embedded credentials from URLs (scheme://user:pass@host → scheme://***REDACTED***@host)."""
+    return _URL_CREDS_RE.sub("://***REDACTED***@", value)
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +240,7 @@ def log_chat_response(
     """Log a chat response with optional Ollama metrics."""
     data = {
         "model": model,
-        "response_preview": _truncate(response_preview, 100),
+        "response_preview": _truncate(_scrub_url_credentials(response_preview), 100),
         "metrics": {
             "eval_count": eval_count,
             "prompt_eval_count": prompt_eval_count,
