@@ -185,16 +185,16 @@ User input (Telegram / Web UI / CLI)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing & API key auth)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, API key auth & bootstrap channel gate)**
 
-The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, and API key authentication on state-changing endpoints.
+The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, and a CLI-only gate on bootstrap mode.
 
 **Files:**
 
 | File | Purpose |
 |---|---|
-| `app.py` | FastAPI service with `/chat`, `/health`, `/bootstrap/status`, `/chat/history/{user_id}`, `/policy/reload`, `/approval/*` endpoints. Integrates identity loading, bootstrap proposal handling, approval gates, and structured tracing. |
-| `cli.py` | Click CLI with `chat` (supports `--model`, `--reason`/`-r`, `--session`) and `serve` commands |
+| `app.py` | FastAPI service with `/chat`, `/health`, `/bootstrap/status`, `/chat/history/{user_id}`, `/policy/reload`, `/approval/*` endpoints. Integrates identity loading, bootstrap proposal handling, approval gates, structured tracing, and bootstrap channel gate (rejects non-CLI requests when bootstrap mode is active). |
+| `cli.py` | Click CLI with `chat` (supports `--model`, `--reason`/`-r`, `--session`), `serve`, `bootstrap` (first-run), and `bootstrap-reset` (emergency identity wipe + redo) commands |
 | `tools.py` | Tool definitions (stub only, not wired in — sandbox paths updated to `/sandbox`) |
 | `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval, sanitization, query helper for dashboard |
 | `policy.yaml` | Zone rules, rate limits, approval settings, denied URL patterns (mounted read-only) |
@@ -213,7 +213,7 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/chat` | `X-Api-Key` required | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt, routes to ChromaDB or Ollama, handles bootstrap proposals. Returns `{ response, model, trace_id }`. |
+| POST | `/chat` | `X-Api-Key` required | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt, routes to ChromaDB or Ollama, handles bootstrap proposals. Returns `{ response, model, trace_id }`. During bootstrap mode, returns 403 for any channel other than `"cli"`. |
 | GET | `/health` | None | Returns `{"status": "healthy"}`. Used by Docker healthcheck and dependent services. Must remain open. |
 | GET | `/bootstrap/status` | None | Returns `{"bootstrap": true/false}`. Checks if BOOTSTRAP.md exists. |
 | GET | `/chat/history/{user_id}` | None | Retrieve conversation history for a session from Redis. |
@@ -454,6 +454,7 @@ my-agent/
 | 12 | ~~`/approval/{id}/respond` unauthenticated~~ | **High** | `agent-core/approval_endpoints.py` | REST endpoint for resolving approvals had no auth — anyone who could reach port 8000 could approve or deny any pending request. | FIXED |
 | 13 | ~~Redis unauthenticated~~ | **High** | `docker-compose.yml` | Redis had no password. Any container on `agent_net` could read conversation history, approval data, and all logs. | FIXED |
 | 14 | ~~agent-core port bound to 0.0.0.0~~ | **Medium** | `docker-compose.yml` | Port 8000 was bound to all interfaces, exposing the agent to every device on the LAN. Changed to `127.0.0.1:8000:8000`. | FIXED |
+| 15 | ~~Bootstrap mode accessible from any channel~~ | **High** | `agent-core/app.py` | When `BOOTSTRAP.md` was present, Telegram or web-ui messages could participate in the identity creation conversation, allowing remote influence over `SOUL.md`, `IDENTITY.md`, and `USER.md`. Fixed with CLI-only channel gate (HTTP 403 for all other channels). Emergency reset via `agent bootstrap-reset` requires host machine access and `RESET` confirmation. | FIXED |
 
 ---
 
@@ -546,7 +547,7 @@ Inspired by Openclaw's agent bootstrapping model, the agent's identity is co-aut
 **What was implemented:**
 - `agent-core/identity.py` — Identity file loader (~90 lines): `is_bootstrap_mode()` detects BOOTSTRAP.md presence, `load_identity()` hot-loads all five identity files on every request, `load_file()` reads with MAX_FILE_CHARS (20,000) truncation, `parse_identity_fields()` extracts structured YAML-like fields from IDENTITY.md, `build_system_prompt()` composes the system prompt (bootstrap mode: BOOTSTRAP.md + AGENTS.md; normal mode: SOUL.md + AGENTS.md + USER.md).
 - `agent-core/bootstrap.py` — Bootstrap proposal parser (~70 lines): `extract_proposals()` parses `<<PROPOSE:FILENAME.md>>` / `<<END_PROPOSE>>` markers via regex, `strip_proposals()` removes markers from display text, `validate_proposal()` checks filename is in ALLOWED_FILES (SOUL.md, IDENTITY.md, USER.md only), content is non-empty, and under 10,000 chars. `check_bootstrap_complete()` deletes BOOTSTRAP.md when all three required files exist with content.
-- `agent-core/app.py` — Integrated identity and bootstrap: loads identity on each `/chat` request, builds composite system prompt, detects bootstrap mode, extracts proposals from LLM response, sends each through approval gate via `handle_bootstrap_proposal()`, supports `auto_approve` flag for testing. Added `/bootstrap/status` and `/chat/history/{user_id}` endpoints. During bootstrap, history truncation is skipped to preserve full conversation context.
+- `agent-core/app.py` — Integrated identity and bootstrap: loads identity on each `/chat` request, builds composite system prompt, detects bootstrap mode, extracts proposals from LLM response, sends each through approval gate via `handle_bootstrap_proposal()`, supports `auto_approve` flag for testing. Added `/bootstrap/status` and `/chat/history/{user_id}` endpoints. During bootstrap, history truncation is skipped to preserve full conversation context. **Bootstrap channel gate:** when bootstrap mode is active, any request with `channel != "cli"` is rejected with HTTP 403 — Telegram and web-ui are completely locked out.
 - `agent-core/approval.py` — Extended with `proposed_content` field so owners can see exactly what the agent wants to write before approving.
 - `agent-identity/` directory — Bind-mounted to `/agent` in container. Contains SOUL.md, IDENTITY.md, USER.md, AGENTS.md. BOOTSTRAP.md is present only during first-run (deleted on completion).
 - `agent-core/tests/test_identity.py` — Tests for bootstrap detection, file loading, truncation, identity field parsing, system prompt building (bootstrap vs. normal mode).
@@ -570,15 +571,21 @@ Inspired by Openclaw's agent bootstrapping model, the agent's identity is co-aut
 
 **The bootstrap conversation (first run):**
 1. Agent detects `BOOTSTRAP.md` exists in `/agent` — enters bootstrap mode
-2. Agent initiates a natural conversation (not an interrogation):
-   - "Hey. I just came online. Who am I? Who are you?"
-   - Together, figure out: agent's name, nature, vibe, emoji
-   - Discuss: what matters to the owner, how the agent should behave, boundaries
-3. Agent **proposes** content for each file using `<<PROPOSE:FILE.md>>` markers
-4. agent-core extracts proposals, validates, and sends through approval gate (Telegram inline keyboards)
-5. Only after owner approval does the agent write to `IDENTITY.md`, `USER.md`, and `SOUL.md`
-6. `check_bootstrap_complete()` detects all three files exist → deletes `BOOTSTRAP.md`
-7. On all subsequent sessions, `BOOTSTRAP.md` is absent, so the agent boots normally
+2. Any `/chat` request with `channel != "cli"` is rejected with HTTP 403 — Telegram and web-ui cannot participate in bootstrap
+3. Owner runs `agent bootstrap` from the CLI on the local machine (inside the container via `docker exec`):
+   - **Phase 1 (form):** collects agent name, nature, vibe, emoji, and owner info via CLI prompts. Writes `IDENTITY.md` and `USER.md` immediately.
+   - **Phase 2 (soul conversation):** interactive CLI chat with the model to define personality. Owner types "done" when ready, reviews and approves the generated `SOUL.md`.
+4. `check_bootstrap_complete()` detects all three files exist → deletes `BOOTSTRAP.md`
+5. On all subsequent sessions, `BOOTSTRAP.md` is absent, so the agent boots normally
+
+**Emergency identity reset (`bootstrap-reset`):**
+For situations where the agent has gone off the rails and needs a full identity wipe:
+1. Owner runs `agent bootstrap-reset` from the CLI on the local machine
+2. Command lists the identity files that will be deleted and requires typing exactly `RESET` to confirm
+3. Deletes `SOUL.md`, `IDENTITY.md`, `USER.md` — creates `BOOTSTRAP.md`
+4. Immediately runs Phase 1 + Phase 2 bootstrap flow
+5. Telegram and web-ui are locked out for the duration (bootstrap channel gate)
+6. Two physical barriers: (a) `docker exec` requires host machine access, (b) must type `RESET` at the terminal
 
 **Runtime behavior (every request after bootstrap):**
 - `agent-core/app.py` loads identity files from `/agent` on each request (hot-reload, no restart needed)
@@ -595,7 +602,8 @@ Inspired by Openclaw's agent bootstrapping model, the agent's identity is co-aut
 - This prevents prompt injection from permanently altering the agent's personality
 
 **Key decisions made:**
-- Bootstrap channel: Telegram first (primary interaction surface), web UI support later
+- Bootstrap channel: **CLI only** — Telegram and web-ui are locked out during bootstrap mode via HTTP 403. This prevents any remote party from participating in the identity creation conversation.
+- Emergency reset: `bootstrap-reset` command requires host machine access (`docker exec`) and explicit `RESET` confirmation — two deliberate barriers against accidental or remote triggering.
 - Template content: Openclaw-inspired defaults, iterated after first bootstrap
 - Proposal format: `<<PROPOSE:FILENAME.md>>` markers parsed by regex
 - Per-agent or global: Global for now (single agent), per-agent when multi-agent is added (Phase 3E)
