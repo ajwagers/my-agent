@@ -1,8 +1,8 @@
 # My-Agent: Product Requirements Document
 
-> **Last Updated:** 2026-02-17
+> **Last Updated:** 2026-02-18
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Next up: Phase 4 (Skill Framework + Skills).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3 (Redis auth, /chat API key, 127.0.0.1 port binding). Next up: Phase 4 (Skill Framework + Skills).
 
 ---
 
@@ -185,9 +185,9 @@ User input (Telegram / Web UI / CLI)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap & structured tracing)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing & API key auth)**
 
-The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, and structured JSON tracing.
+The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, and API key authentication on state-changing endpoints.
 
 **Files:**
 
@@ -211,16 +211,16 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 
 **API Endpoints:**
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/chat` | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt, routes to ChromaDB or Ollama, handles bootstrap proposals. Returns `{ response, model, trace_id }`. |
-| GET | `/health` | Returns `{"status": "healthy"}`. Used by Docker healthcheck and dependent services. |
-| GET | `/bootstrap/status` | Returns `{"bootstrap": true/false}`. Checks if BOOTSTRAP.md exists. |
-| GET | `/chat/history/{user_id}` | Retrieve conversation history for a session from Redis. |
-| POST | `/policy/reload` | Hot-reload policy.yaml without container restart. |
-| GET | `/approval/pending` | List all pending approval requests. |
-| GET | `/approval/{id}` | Check a specific approval's status. |
-| POST | `/approval/{id}/respond` | Resolve an approval (approve/deny). Called by telegram-gateway. |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/chat` | `X-Api-Key` required | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt, routes to ChromaDB or Ollama, handles bootstrap proposals. Returns `{ response, model, trace_id }`. |
+| GET | `/health` | None | Returns `{"status": "healthy"}`. Used by Docker healthcheck and dependent services. Must remain open. |
+| GET | `/bootstrap/status` | None | Returns `{"bootstrap": true/false}`. Checks if BOOTSTRAP.md exists. |
+| GET | `/chat/history/{user_id}` | None | Retrieve conversation history for a session from Redis. |
+| POST | `/policy/reload` | None | Hot-reload policy.yaml without container restart. |
+| GET | `/approval/pending` | None | List all pending approval requests. |
+| GET | `/approval/{id}` | None | Check a specific approval's status. |
+| POST | `/approval/{id}/respond` | `X-Api-Key` required | Resolve an approval (approve/deny). Called by telegram-gateway. |
 
 **`ChatRequest` schema:**
 ```json
@@ -355,6 +355,7 @@ Streamlit-based health dashboard providing real-time operational visibility.
 - `redis:alpine` image in docker-compose.yml
 - Connected to `agent_net`
 - `restart: unless-stopped`
+- **Password-protected** via `--requirepass ${REDIS_PASSWORD}`. All services connect via `redis://:${REDIS_PASSWORD}@redis:6379` — no unauthenticated access.
 - Used by agent-core for conversation history storage (per user_id session keys)
 - Used by agent-core + telegram-gateway for approval gate (hash storage + pub/sub)
 - Used by agent-core for structured log storage (`logs:all` firehose + `logs:chat`, `logs:skill`, `logs:policy`, `logs:approval` type-specific lists)
@@ -449,6 +450,10 @@ my-agent/
 | 8 | ~~Duplicate Application.builder() in telegram bot~~ | **Medium** | `telegram-gateway/bot.py` | App was built twice; second build overwrote `post_init` hook so greeting never fired. | FIXED |
 | 9 | ~~Stray FastAPI route in web UI~~ | **Medium** | `web-ui/app.py` | `@app.post("/chat")` decorator with no FastAPI app object. Would crash on import. | FIXED |
 | 10 | ~~Port conflict: agent-core and chroma-rag~~ | **High** | `docker-compose.yml` | Both services mapped host port 8000. Changed chroma-rag to 8100. | FIXED |
+| 11 | ~~`/chat` endpoint unauthenticated~~ | **High** | `agent-core/app.py` | No authentication on the main chat endpoint — any process on the network could send messages, impersonate any `user_id`, or exhaust Ollama resources. | FIXED |
+| 12 | ~~`/approval/{id}/respond` unauthenticated~~ | **High** | `agent-core/approval_endpoints.py` | REST endpoint for resolving approvals had no auth — anyone who could reach port 8000 could approve or deny any pending request. | FIXED |
+| 13 | ~~Redis unauthenticated~~ | **High** | `docker-compose.yml` | Redis had no password. Any container on `agent_net` could read conversation history, approval data, and all logs. | FIXED |
+| 14 | ~~agent-core port bound to 0.0.0.0~~ | **Medium** | `docker-compose.yml` | Port 8000 was bound to all interfaces, exposing the agent to every device on the LAN. Changed to `127.0.0.1:8000:8000`. | FIXED |
 
 ---
 
@@ -467,7 +472,7 @@ The roadmap is designed to reach feature parity with Openclaw's core architectur
 | Model-agnostic / brain-vs-muscle routing | Multi-model Ollama + keyword-based auto-routing (`route_model()`) | 2 (done) |
 | Soul / Persona file | Conversational bootstrap (Openclaw-inspired) with policy-gated file writes. SOUL.md, IDENTITY.md, USER.md co-authored by agent + owner. | 2A (done) |
 | Conversation memory | Redis rolling history per user/session | 2 (done) |
-| Policy, guardrails, observability | Four-zone permission model, approval gates, rate limits, structured tracing, health dashboard. **Built before soul/bootstrap.** | 3A (done), 3B (done) |
+| Policy, guardrails, observability | Four-zone permission model, approval gates, rate limits, structured tracing, health dashboard. **Built before soul/bootstrap.** | 3A (done), 3B (done), 3C (done) |
 | Modular skill system | Local `skills/` directory, hand-built or vetted, no external marketplaces. Each skill enforces its own security. | 4A |
 | First skills (search, files, RAG) | Web search, URL fetch, file read/write, PDF parse, RAG retrieval. Secret broker for API keys. | 4B |
 | Memory & scheduled tasks | Persistent memory with sanitization layer, heartbeat/cron, task management. | 4C |
@@ -723,7 +728,7 @@ A dedicated Streamlit dashboard (separate service on port 8502) showing the oper
 **What was built:**
 - `dashboard/app.py` — Streamlit dashboard (~220 lines) with 5 panels: System Health (service status with green/yellow/red indicators), Activity (request counts, channel breakdown, skill calls, response times, policy decisions), Queue & Jobs (placeholder for Phase 5 + pending approvals), Recent Activity Feed (filterable log tail), Security & Audit (policy denials + approval history).
 - `dashboard/redis_queries.py` — Redis data access layer (~130 lines): `get_recent_logs()` (mirrors `tracing.get_recent_logs()` independently), `count_logs_by_type()`, `get_activity_stats()` (aggregates from `logs:all` firehose — requests by channel, skill counts, avg response time by model, policy decisions), `get_pending_approvals()` (scans `approval:*` hashes), `get_approval_history()`, `get_security_events()` (combines policy denials with approval timeouts/denials).
-- `dashboard/health_probes.py` — HTTP health probes (~90 lines) with 3s timeout for each service: agent-core (`/health`), Ollama (`/api/tags` — extracts loaded models), ChromaDB (`/api/v1/heartbeat` + collection count), Redis (ping + memory info), web-ui (`/_stcore/health`), telegram-gateway (always "unknown" — no health endpoint).
+- `dashboard/health_probes.py` — HTTP health probes (~90 lines) with 3s timeout for each service: agent-core (`/health`), Ollama (`/api/tags` — extracts loaded models), ChromaDB (`/api/v2/heartbeat`, falling back to v1), Redis (ping + memory info), web-ui (`/_stcore/health`), telegram-gateway (always "unknown" — no health endpoint).
 - `dashboard/Dockerfile` — Python 3.12-slim, matches web-ui pattern.
 - `dashboard/requirements.txt` — streamlit, redis, requests (minimal dependencies).
 - `dashboard/tests/` — 31 unit tests (20 redis_queries + 11 health_probes), all passing without Docker.
@@ -1074,7 +1079,9 @@ All secrets are stored in `.env` in the project root. **Never commit this file.*
 | `TELEGRAM_TOKEN` | telegram-gateway | Bot token from @BotFather |
 | `CHAT_ID` | telegram-gateway | Your numeric Telegram chat ID (for filtering) |
 | `AGENT_URL` | telegram-gateway | URL to reach agent-core (`http://agent-core:8000`) |
-| `REDIS_URL` | agent-core, telegram-gateway | Redis connection string (default `redis://redis:6379`) |
+| `REDIS_PASSWORD` | redis, agent-core, telegram-gateway, dashboard | Redis server password. Used in `--requirepass` on the redis container and embedded in `REDIS_URL` for all clients. |
+| `REDIS_URL` | agent-core, telegram-gateway, dashboard | Redis connection string including password (`redis://:${REDIS_PASSWORD}@redis:6379`) |
+| `AGENT_API_KEY` | agent-core, telegram-gateway, web-ui | Shared API key required in the `X-Api-Key` header for `POST /chat` and `POST /approval/{id}/respond`. Generated with `secrets.token_urlsafe(32)`. |
 | `DEFAULT_MODEL` | agent-core | Default Ollama model for fast tasks (default `phi3:latest`) |
 | `REASONING_MODEL` | agent-core | Stronger Ollama model for planning/reasoning (default `llama3.1:8b`) |
 | `BOOTSTRAP_MODEL` | agent-core | Model used during bootstrap conversation (default `mistral:latest`) |

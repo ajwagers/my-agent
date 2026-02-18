@@ -263,6 +263,7 @@
   ```bash
   curl -s -X POST http://localhost:8000/chat \
     -H "Content-Type: application/json" \
+    -H "X-Api-Key: $AGENT_API_KEY" \
     -d '{"message": "hello", "user_id": "andy", "channel": "demo"}' | jq
   ```
 - Show the response with `trace_id` field
@@ -273,9 +274,9 @@
 - Highlight: same trace_id on both the request and response log entries
 
 ### Query from Redis (17:00 - 18:00)
-- Connect to Redis and query:
+- Connect to Redis and query (Redis is password-protected):
   ```bash
-  docker exec -it redis redis-cli
+  docker exec -it redis redis-cli -a $REDIS_PASSWORD
   > LRANGE logs:all 0 2
   > LRANGE logs:chat 0 2
   > LLEN logs:all
@@ -287,7 +288,7 @@
 - If possible, trigger a bootstrap approval or use the REST API
 - Show the approval events in `logs:approval`:
   ```bash
-  docker exec -it redis redis-cli LRANGE logs:approval 0 4
+  docker exec -it redis redis-cli -a $REDIS_PASSWORD LRANGE logs:approval 0 4
   ```
 - Point out `response_time_ms` on the resolution event — "how long did you take to tap Approve?"
 
@@ -326,14 +327,14 @@
 - "Zero new dependencies. Zero new containers. Just 240 lines of Python stdlib."
 
 ### What's Next (21:00 - 22:00)
-- "Next: the health dashboard. It reads from these Redis lists and shows real-time activity — request counts, approval history, security events, model performance."
-- "After that: the skill framework. When the agent starts calling tools — web search, file operations, code execution — every single call flows through this tracing pipeline."
+- "The health dashboard is already built — it's a separate Streamlit app on port 8502 that reads from these exact Redis lists. Five panels: service health, activity metrics, pending approvals, a filterable activity feed, and a security audit trail. Auto-refreshes every 10 seconds."
+- "Next up: the skill framework. When the agent starts calling tools — web search, file operations, code execution — every single call flows through this tracing pipeline."
 - "You'll see exactly what the agent did, what it was allowed to do, what it was denied, and how long it took."
 - "Subscribe so you don't miss it."
 
 ### Call to Action (22:00 - 22:30)
-- "All the code is linked below, including the full test suite."
-- "If you want to see a specific dashboard panel first — activity feed, security audit, model metrics — drop a comment."
+- "All the code is linked below, including the full test suite and the dashboard."
+- "If you're building your own agent stack and have questions about the tracing setup, drop a comment."
 - Like/subscribe/etc.
 
 ---

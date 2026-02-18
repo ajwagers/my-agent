@@ -372,9 +372,10 @@ docker compose up --build -d
 ### Verify structured logging
 
 ```bash
-# Send a chat message
+# Send a chat message (X-Api-Key required — get value from .env)
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-Api-Key: $(grep AGENT_API_KEY .env | cut -d= -f2)" \
   -d '{"message": "hello", "user_id": "test", "channel": "curl"}'
 ```
 
@@ -397,8 +398,8 @@ You should see single-line JSON entries instead of the old `print()` output:
 ### Query logs from Redis
 
 ```bash
-# Connect to Redis CLI
-docker exec -it redis redis-cli
+# Connect to Redis CLI (Redis is password-protected — pass -a flag)
+docker exec -it redis redis-cli -a $(grep REDIS_PASSWORD .env | cut -d= -f2)
 
 # Check firehose
 LRANGE logs:all 0 4
@@ -416,7 +417,7 @@ LLEN logs:chat
 Create an approval request (e.g., via bootstrap or the REST API) and check:
 
 ```bash
-docker exec -it redis redis-cli LRANGE logs:approval 0 4
+docker exec -it redis redis-cli -a $(grep REDIS_PASSWORD .env | cut -d= -f2) LRANGE logs:approval 0 4
 ```
 
 You should see structured JSON entries for both the "pending" and "approved"/"denied" events, with `response_time_ms` on the resolution event.
@@ -460,12 +461,14 @@ Plus event-specific fields:
 - **No new dependencies** — Uses only Python stdlib modules. No additional pip packages required.
 - **Approval tracing uses lazy imports** — `approval.py` imports tracing inside try/except, maintaining independence for testing.
 - **CLI prints are preserved** — Only `app.py` print statements were replaced. `cli.py` user-facing output is unchanged.
+- **Redis is password-protected** — All services connect via `redis://:${REDIS_PASSWORD}@redis:6379`. Set `REDIS_PASSWORD` in `.env`. Redis CLI commands require `-a <password>`.
+- **`/chat` requires API key** — All requests to `POST /chat` must include `X-Api-Key: <AGENT_API_KEY>` header. The value is set in `.env` and injected into agent-core, telegram-gateway, and web-ui via docker-compose. Port 8000 is also bound to `127.0.0.1` only (not exposed to LAN).
 
 ---
 
 ## What's Next
 
-This guide established the observability layer. The next step is:
+This guide established the observability layer. The health dashboard (Chunk 3C) is now built on top of it:
 
-1. **Health Dashboard (Chunk 3C)** — A Streamlit dashboard that reads from these Redis log lists to show real-time activity feeds, request counts, approval history, and security events
+1. **Health Dashboard (Chunk 3C)** ✅ — A separate Streamlit service (`dashboard/` on port 8502) that reads from these Redis log lists. Five panels: System Health (HTTP probes for all services), Activity (request counts, channel breakdown, response times), Queue & Jobs (placeholder + pending approvals), Recent Activity Feed (filterable log tail), and Security & Audit (policy denials + approval history). Auto-refreshes every 10 seconds. See `dashboard/app.py`, `dashboard/redis_queries.py`, and `dashboard/health_probes.py`.
 2. **Skill Framework (Chunk 4A)** — When skills are added, `log_skill_call()` and `log_policy_decision()` will be wired into the skill execution pipeline, giving full visibility into every tool the agent uses
