@@ -216,8 +216,8 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | POST | `/chat` | `X-Api-Key` required | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt, routes to ChromaDB or Ollama, handles bootstrap proposals. Returns `{ response, model, trace_id }`. During bootstrap mode, returns 403 for any channel other than `"cli"`. |
 | GET | `/health` | None | Returns `{"status": "healthy"}`. Used by Docker healthcheck and dependent services. Must remain open. |
 | GET | `/bootstrap/status` | None | Returns `{"bootstrap": true/false}`. Checks if BOOTSTRAP.md exists. |
-| GET | `/chat/history/{user_id}` | None | Retrieve conversation history for a session from Redis. |
-| POST | `/policy/reload` | None | Hot-reload policy.yaml without container restart. |
+| GET | `/chat/history/{user_id}` | `X-Api-Key` required | Retrieve conversation history for a session from Redis. |
+| POST | `/policy/reload` | `X-Api-Key` required | Hot-reload policy.yaml without container restart. |
 | GET | `/approval/pending` | None | List all pending approval requests. |
 | GET | `/approval/{id}` | None | Check a specific approval's status. |
 | POST | `/approval/{id}/respond` | `X-Api-Key` required | Resolve an approval (approve/deny). Called by telegram-gateway. |

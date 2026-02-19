@@ -212,7 +212,7 @@ async def health():
 async def bootstrap_status():
     return {"bootstrap": identity_module.is_bootstrap_mode()}
 
-@app.get("/chat/history/{user_id}")
+@app.get("/chat/history/{user_id}", dependencies=[Depends(_require_api_key)])
 async def chat_history(user_id: str):
     """Retrieve conversation history for a session."""
     session_key = f"chat:{user_id}"
@@ -220,7 +220,7 @@ async def chat_history(user_id: str):
     history = json.loads(raw) if raw else []
     return {"history": history}
 
-@app.post("/policy/reload")
+@app.post("/policy/reload", dependencies=[Depends(_require_api_key)])
 async def policy_reload():
     """Hot-reload policy.yaml without restarting the container."""
     app.state.policy_engine.load_config()
