@@ -2,7 +2,7 @@
 
 > **Last Updated:** 2026-02-18
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3 (Redis auth, /chat API key, 127.0.0.1 port binding). Next up: Phase 4 (Skill Framework + Skills).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Next up: Phase 4 (Skill Framework + Skills).
 
 ---
 
@@ -185,7 +185,7 @@ User input (Telegram / Web UI / CLI)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, API key auth & bootstrap channel gate)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage & bootstrap channel gate)**
 
 The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, and a CLI-only gate on bootstrap mode.
 
@@ -196,7 +196,7 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `app.py` | FastAPI service with `/chat`, `/health`, `/bootstrap/status`, `/chat/history/{user_id}`, `/policy/reload`, `/approval/*` endpoints. Integrates identity loading, bootstrap proposal handling, approval gates, structured tracing, and bootstrap channel gate (rejects non-CLI requests when bootstrap mode is active). |
 | `cli.py` | Click CLI with `chat` (supports `--model`, `--reason`/`-r`, `--session`), `serve`, `bootstrap` (first-run), and `bootstrap-reset` (emergency identity wipe + redo) commands |
 | `tools.py` | Tool definitions (stub only, not wired in — sandbox paths updated to `/sandbox`) |
-| `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval, sanitization, query helper for dashboard |
+| `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval, enhanced sanitization (`_SENSITIVE_KEYS` includes `authorization` and `x-api-key`; `_scrub_url_credentials()` strips embedded URL credentials; `response_preview` sanitized before logging), query helper for dashboard |
 | `policy.yaml` | Zone rules, rate limits, approval settings, denied URL patterns (mounted read-only) |
 | `policy.py` | Central policy engine: 4-zone model, hard-coded deny-list, rate limiting, access checks |
 | `approval.py` | Approval gate manager: Redis hash storage, pub/sub notifications, async wait, timeout, proposed_content support, tracing hooks |
@@ -392,7 +392,7 @@ my-agent/
 │       ├── test_approval.py    # 13 tests: create, resolve, timeout, get_pending
 │       ├── test_identity.py    # Identity loader tests: bootstrap detection, file loading, prompt building
 │       ├── test_bootstrap.py   # Bootstrap parser tests: proposal extraction, validation, completion, approval integration
-│       └── test_tracing.py     # 49 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization
+│       └── test_tracing.py     # 55 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization (TestSanitization: 17 tests)
 │
 │
 ├── agent-identity/             # Bind-mounted to /agent in container (Zone 2)
@@ -455,6 +455,8 @@ my-agent/
 | 13 | ~~Redis unauthenticated~~ | **High** | `docker-compose.yml` | Redis had no password. Any container on `agent_net` could read conversation history, approval data, and all logs. | FIXED |
 | 14 | ~~agent-core port bound to 0.0.0.0~~ | **Medium** | `docker-compose.yml` | Port 8000 was bound to all interfaces, exposing the agent to every device on the LAN. Changed to `127.0.0.1:8000:8000`. | FIXED |
 | 15 | ~~Bootstrap mode accessible from any channel~~ | **High** | `agent-core/app.py` | When `BOOTSTRAP.md` was present, Telegram or web-ui messages could participate in the identity creation conversation, allowing remote influence over `SOUL.md`, `IDENTITY.md`, and `USER.md`. Fixed with CLI-only channel gate (HTTP 403 for all other channels). Emergency reset via `agent bootstrap-reset` requires host machine access and `RESET` confirmation. | FIXED |
+| 16 | Rate limiting is in-memory only | **Low** | `agent-core/policy.py` | The sliding window rate limiter resets on container restart. No impact until skills exist (nothing to rate-limit yet). Deferred to Phase 4A when the skill execution pipeline is built — Redis-backed rate limiting will be added at that point. | DEFERRED → 4A |
+| 17 | Web UI bypasses agent-core | **Medium** | `web-ui/app.py` | Web UI talks directly to Ollama via LangChain instead of routing through agent-core. Policy engine, rate limiting, tracing, and future skills do not apply to web UI conversations. Deferred — will be addressed when Phase 4 skills are built, at which point routing web UI through agent-core becomes necessary for feature parity. | DEFERRED → 4A |
 
 ---
 
@@ -504,6 +506,17 @@ Openclaw's power comes from giving the agent real system access — and that's a
 - **Per-skill security** — every skill implements its own `validate()`, `risk_level`, `rate_limit`, and `sanitize_output()`. The policy engine enforces these, but skills are responsible for knowing their own threat model. A file tool validates paths. A shell tool checks deny-lists. An API tool prevents SSRF. Security is not bolted on — it's part of the skill interface.
 - **Health dashboard** — a real-time operational dashboard shows what the agent is doing, what's in the queue, how many actions have executed, and any security events. You have full visibility before granting more autonomy.
 - **Security before capability** — Chunk 3A (Policy Engine) is built before Chunk 2A (Soul/Bootstrap). The guardrail framework exists before the agent gets its personality or any ability to act. The bootstrap process is the first consumer of the policy engine.
+
+**Deferred security hardening (post-Phase 3, pre-Phase 4):**
+
+The following items are intentionally deferred — they either have no impact until skills exist, or are addressed as part of Phase 4 design:
+
+- **Rate limiting durability** (→ Phase 4A) — In-memory sliding window resets on container restart. Will be replaced with Redis-backed rate limiting when the skill execution pipeline is built.
+- **URL deny-list bypass hardening** (→ Phase 4B) — Hardened URL validation (DNS rebinding, unusual ports, Docker service name resolution) is a design requirement of the `url_fetch` skill, not a current gap.
+- **Shell deny-list regex hardening** (→ Phase 4F) — Obfuscation-resistant deny patterns are a design requirement of `shell_exec`. No shell skill exists yet.
+- **Skill `sanitize_output()` enforcement** (→ Phase 4A) — All skills must implement this method; the policy engine will enforce it at execution time. Part of 4A framework design.
+- **Container hardening** (→ Chunk 3D) — Non-root user, read-only filesystem, seccomp/AppArmor profiles. Intentionally deferred.
+- **Web UI → agent-core routing** (→ Phase 4A) — Web UI currently talks directly to Ollama, bypassing the policy engine and all future skills. Will be fixed when Phase 4 skills are added, at which point routing through agent-core becomes necessary for feature parity.
 
 ### Legend
 
@@ -694,7 +707,7 @@ The policy engine enforces the four-zone permission model. Every action the agen
 - `agent-core/skill_contract.py` — Abstract `SkillBase` class with `SkillMetadata` dataclass. Interface for all future skills: `validate()`, `execute()`, `sanitize_output()`.
 - `agent-core/approval.py` — `ApprovalManager` class: Redis hash storage at `approval:{uuid}`, pub/sub on `approvals:pending` channel, 5-minute auto-deny timeout, double-resolve protection, startup catch-up.
 - `agent-core/approval_endpoints.py` — REST router: `GET /approval/pending`, `GET /approval/{id}`, `POST /approval/{id}/respond`.
-- `agent-core/tests/` — 158 unit tests total (51 policy + 13 approval + 20 identity + 25 bootstrap + 49 tracing), all passing, no Docker needed. Covers: deny-list patterns, zone enforcement, symlink escape, external access, rate limiting, approval lifecycle, timeout, structured tracing, sanitization, retention.
+- `agent-core/tests/` — 164 unit tests total (51 policy + 13 approval + 20 identity + 25 bootstrap + 55 tracing), all passing, no Docker needed. Covers: deny-list patterns, zone enforcement, symlink escape, external access, rate limiting, approval lifecycle, timeout, structured tracing, sanitization, retention.
 - `telegram-gateway/bot.py` — Updated with Redis subscription, InlineKeyboardMarkup for Approve/Deny, callback handler, startup catch-up for missed approvals.
 - `docker-compose.yml` — Volumes: `agent_sandbox:/sandbox`, `agent_identity:/agent`, `policy.yaml:ro`. telegram-gateway now depends on Redis.
 
@@ -709,11 +722,11 @@ The policy engine enforces the four-zone permission model. Every action the agen
 Structured JSON tracing for every agent action. Every `/chat` request, skill call, policy decision, and approval event is logged to both stdout (Docker captures) and Redis lists (dashboard reads). Per-request trace IDs correlate all events within a single request.
 
 **What was built:**
-- `agent-core/tracing.py` — Core tracing module (~240 lines): `contextvars`-based trace ID propagation (`_trace_id`, `_user_id`, `_channel`), `JSONFormatter` for single-line JSON stdout output, dual-push to Redis (`logs:all` firehose + `logs:<type>` per event type), count-based retention via `LTRIM` (1000 entries for `logs:all`, 500 per type list), 5 public event emitters (`log_chat_request()`, `log_chat_response()`, `log_skill_call()`, `log_policy_decision()`, `log_approval_event()`), `_sanitize()` for redacting sensitive keys (password, token, secret, api_key), `_truncate()` for capping field length, `get_recent_logs()` query helper for the dashboard. All Redis writes wrapped in try/except — tracing never crashes a request.
+- `agent-core/tracing.py` — Core tracing module (~250 lines): `contextvars`-based trace ID propagation (`_trace_id`, `_user_id`, `_channel`), `JSONFormatter` for single-line JSON stdout output, dual-push to Redis (`logs:all` firehose + `logs:<type>` per event type), count-based retention via `LTRIM` (1000 entries for `logs:all`, 500 per type list), 5 public event emitters (`log_chat_request()`, `log_chat_response()`, `log_skill_call()`, `log_policy_decision()`, `log_approval_event()`), `_sanitize()` redacts sensitive keys (`_SENSITIVE_KEYS` covers password, token, secret, api_key, apikey, api_secret, authorization, x-api-key) and scrubs URL credentials from all string values, `_scrub_url_credentials()` strips embedded credentials from URLs (scheme://user:pass@host → scheme://***REDACTED***@host), `response_preview` in `log_chat_response()` sanitized before logging, `_truncate()` for capping field length, `get_recent_logs()` query helper for the dashboard. All Redis writes wrapped in try/except — tracing never crashes a request.
 - `agent-core/app.py` — Wired tracing: `setup_logging(redis_client)` at startup, `new_trace()` at `/chat` entry, `log_chat_request()` after model routing, `log_chat_response()` with Ollama metrics (`eval_count`, `prompt_eval_count`, `total_duration`). All 3 `print()` statements replaced with structured JSON logs. `trace_id` added to `/chat` response JSON.
 - `agent-core/approval.py` — Tracing hooks: `log_approval_event(action=..., status="pending")` in `create_request()`, `log_approval_event(action=status, response_time_ms=...)` in `resolve()`. Uses lazy `from tracing import log_approval_event` with `try/except ImportError` for independence.
 - `agent-core/tests/conftest.py` — FakeRedis extended with `_lists` dict and `lpush()`, `ltrim()`, `lrange()`, `llen()` methods. `keys()` and `delete()` updated to include list keys.
-- `agent-core/tests/test_tracing.py` — 49 tests across 10 test classes: `TestTraceContext` (5), `TestJSONFormatter` (3), `TestChatLogging` (6), `TestSharedTraceID` (3), `TestSkillLogging` (2), `TestPolicyLogging` (3), `TestApprovalLogging` (4), `TestRedisQueryable` (5), `TestRetention` (3), `TestRedisResilience` (4), `TestSanitization` (11). All passing.
+- `agent-core/tests/test_tracing.py` — 55 tests across 10 test classes: `TestTraceContext` (5), `TestJSONFormatter` (3), `TestChatLogging` (6), `TestSharedTraceID` (3), `TestSkillLogging` (2), `TestPolicyLogging` (3), `TestApprovalLogging` (4), `TestRedisQueryable` (5), `TestRetention` (3), `TestRedisResilience` (4), `TestSanitization` (17). All passing.
 
 **Design decisions made:**
 - **Trace ID flow:** `contextvars.ContextVar` — set once at request entry, automatically available downstream without threading through parameters
