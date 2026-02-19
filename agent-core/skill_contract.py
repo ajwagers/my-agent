@@ -1,9 +1,13 @@
 """
 Skill Security Contract — abstract base class for all agent skills.
 
+DEPRECATED: Superseded by skills/base.py (Phase 4A). The new SkillBase adds
+validate() -> (bool, str), a parameters JSON Schema field, max_calls_per_turn,
+sanitize_output() -> str, and a concrete to_ollama_tool() method. No production
+code inherits from this class any longer; kept for historical reference only.
+
 Every skill must declare its risk level, rate limit, and whether it needs
 owner approval. The policy engine uses these declarations to enforce guardrails.
-Concrete implementations come in Chunk 4A.
 """
 
 from abc import ABC, abstractmethod

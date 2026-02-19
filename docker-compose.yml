@@ -44,6 +44,9 @@ services:
       - DEEP_MODEL=qwen2.5:14b
       - DEEP_NUM_CTX=16384
       - NUM_CTX=8192
+      - TOOL_MODEL=llama3.1:8b
+      - MAX_TOOL_ITERATIONS=5
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
     volumes:
       - ./agent-core/policy.yaml:/app/policy.yaml:ro
       - agent_sandbox:/sandbox

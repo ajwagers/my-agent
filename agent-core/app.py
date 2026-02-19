@@ -3,7 +3,6 @@ from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 from ollama import Client
 import asyncio
-import chromadb
 import os
 import json
 import redis
@@ -14,6 +13,10 @@ from approval_endpoints import router as approval_router
 import identity as identity_module
 import bootstrap
 import tracing
+from skills.registry import SkillRegistry
+from skills.rag_search import RagSearchSkill
+from skills.web_search import WebSearchSkill
+from skill_runner import run_tool_loop
 
 app = FastAPI()
 ollama_client = Client(host='http://ollama-runner:11434')
@@ -44,6 +47,11 @@ app.state.approval_manager = approval_manager
 # Approval REST endpoints
 app.include_router(approval_router)
 
+# Skill registry
+skill_registry = SkillRegistry()
+skill_registry.register(RagSearchSkill())
+skill_registry.register(WebSearchSkill())
+
 # Config
 HISTORY_TOKEN_BUDGET = int(os.getenv("HISTORY_TOKEN_BUDGET", "6000"))
 NUM_CTX = int(os.getenv("NUM_CTX", "8192"))
@@ -55,6 +63,8 @@ REASONING_KEYWORDS = [
     "explain", "analyze", "plan", "code", "why", "compare",
     "debug", "reason", "think", "step by step", "how does", "what if",
 ]
+TOOL_MODEL = os.getenv("TOOL_MODEL", "llama3.1:8b")
+MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
 
 def estimate_tokens(text):
     """Rough chars-to-tokens heuristic."""
@@ -82,12 +92,6 @@ def route_model(message, requested_model):
             return REASONING_MODEL
     return DEFAULT_MODEL
 
-def rag_tool(query):
-    chroma_client = chromadb.HttpClient(host='chroma-rag', port=8000)
-    collection = chroma_client.get_collection("rag_data")
-    results = collection.query(query_texts=[query], n_results=3)
-    return results['documents'][0]
-
 async def handle_bootstrap_proposal(filename: str, content: str, user_id: str):
     """Create approval request, wait for resolution, write file if approved."""
     approval_id = approval_manager.create_request(
@@ -110,10 +114,6 @@ async def handle_bootstrap_proposal(filename: str, content: str, user_id: str):
 async def chat(request: ChatRequest):
     user_id = request.user_id or "default"
     trace_id = tracing.new_trace(user_id=user_id, channel=request.channel or "")
-
-    if "search docs" in request.message.lower():
-        docs = rag_tool(request.message)
-        return {"response": "\n".join(docs), "trace_id": trace_id}
 
     # Build session key and load history
     session_key = f"chat:{user_id}"
@@ -153,30 +153,42 @@ async def chat(request: ChatRequest):
 
     # Route to the appropriate model
     model = route_model(request.message, request.model)
+    # When skills are available and the client did not request a specific model,
+    # override to TOOL_MODEL which is fine-tuned for tool/function calling.
+    if len(skill_registry) > 0 and request.model is None:
+        model = TOOL_MODEL
 
     tracing.log_chat_request(
         request.message, model=model, bootstrap=in_bootstrap,
     )
 
-    # Send to Ollama with system prompt (use larger context for deep model)
+    # Run through tool loop (handles both tool-calling and plain chat)
     ctx = DEEP_NUM_CTX if model == DEEP_MODEL else NUM_CTX
-    response = ollama_client.chat(
-        model=model,
+    tools = skill_registry.to_ollama_tools() or None
+    assistant_content, updated_messages, tool_stats = await run_tool_loop(
+        ollama_client=ollama_client,
         messages=ollama_messages,
-        options={"num_ctx": ctx},
+        tools=tools,
+        model=model,
+        ctx=ctx,
+        skill_registry=skill_registry,
+        policy_engine=policy_engine,
+        approval_manager=approval_manager,
+        auto_approve=request.auto_approve,
+        user_id=user_id,
+        max_iterations=MAX_TOOL_ITERATIONS,
     )
-    assistant_content = response['message']['content']
 
-    # Extract Ollama metrics for tracing
-    eval_count = response.get("eval_count", 0)
-    prompt_eval_count = response.get("prompt_eval_count", 0)
-    total_duration = response.get("total_duration", 0)
+    # Ollama per-request metrics are not available from a multi-turn tool loop;
+    # per-skill timing is captured via log_skill_call inside execute_skill.
     tracing.log_chat_response(
         model=model,
         response_preview=assistant_content,
-        eval_count=eval_count,
-        prompt_eval_count=prompt_eval_count,
-        total_duration_ms=total_duration / 1_000_000 if total_duration else 0,
+        eval_count=0,
+        prompt_eval_count=0,
+        total_duration_ms=0,
+        tool_iterations=tool_stats["iterations"],
+        skills_called=tool_stats["skills_called"],
     )
 
     # In bootstrap mode, check for file proposals

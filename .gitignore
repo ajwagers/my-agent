@@ -28,6 +28,9 @@ Thumbs.db
 # PDFs (source docs kept outside version control)
 *.pdf
 
+# Video outline drafts
+VIDEO_OUTLINE*
+
 # Archives
 *.zip
 
