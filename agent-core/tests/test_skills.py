@@ -441,11 +441,18 @@ class TestRagSearchSkill:
         mock_collection = MagicMock()
         mock_collection.query.return_value = {"documents": [["doc1", "doc2"]]}
         mock_instance = MagicMock()
-        mock_instance.get_collection.return_value = mock_collection
+        mock_instance.get_or_create_collection.return_value = mock_collection
         mock_chroma_module = MagicMock()
         mock_chroma_module.HttpClient.return_value = mock_instance
+        mock_ef = MagicMock()
+        mock_ef_class = MagicMock(return_value=mock_ef)
+        mock_ef_module = MagicMock()
+        mock_ef_module.DefaultEmbeddingFunction = mock_ef_class
 
-        with patch.dict(sys.modules, {"chromadb": mock_chroma_module}):
+        with patch.dict(sys.modules, {
+            "chromadb": mock_chroma_module,
+            "chromadb.utils.embedding_functions": mock_ef_module,
+        }):
             result = await RagSearchSkill().execute({"query": "hello"})
 
         assert result == ["doc1", "doc2"]
@@ -457,8 +464,13 @@ class TestRagSearchSkill:
 
         mock_chroma_module = MagicMock()
         mock_chroma_module.HttpClient.side_effect = Exception("connection refused")
+        mock_ef_module = MagicMock()
+        mock_ef_module.DefaultEmbeddingFunction = MagicMock()
 
-        with patch.dict(sys.modules, {"chromadb": mock_chroma_module}):
+        with patch.dict(sys.modules, {
+            "chromadb": mock_chroma_module,
+            "chromadb.utils.embedding_functions": mock_ef_module,
+        }):
             result = await RagSearchSkill().execute({"query": "hello"})
 
         assert result == []
@@ -481,6 +493,150 @@ class TestRagSearchSkill:
         from skills.rag_search import RagSearchSkill
         out = RagSearchSkill().sanitize_output([])
         assert "no relevant documents" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# TestRagIngestSkill
+# ---------------------------------------------------------------------------
+
+class TestRagIngestSkill:
+    def test_metadata_properties(self):
+        from skills.rag_ingest import RagIngestSkill
+        skill = RagIngestSkill()
+        assert skill.name == "rag_ingest"
+        assert skill.risk_level == RiskLevel.LOW
+        assert skill.requires_approval is False
+        assert skill.metadata.max_calls_per_turn == 5
+
+    def test_validate_valid_params(self):
+        from skills.rag_ingest import RagIngestSkill
+        ok, reason = RagIngestSkill().validate({"text": "some content"})
+        assert ok is True
+        assert reason == ""
+
+    def test_validate_with_source(self):
+        from skills.rag_ingest import RagIngestSkill
+        ok, _ = RagIngestSkill().validate({"text": "content", "source": "web article"})
+        assert ok is True
+
+    def test_validate_empty_text(self):
+        from skills.rag_ingest import RagIngestSkill
+        ok, reason = RagIngestSkill().validate({"text": "  "})
+        assert ok is False
+        assert reason
+
+    def test_validate_non_string_text(self):
+        from skills.rag_ingest import RagIngestSkill
+        ok, reason = RagIngestSkill().validate({"text": 42})
+        assert ok is False
+
+    def test_validate_text_too_long(self):
+        from skills.rag_ingest import RagIngestSkill
+        ok, reason = RagIngestSkill().validate({"text": "x" * 50_001})
+        assert ok is False
+        assert "50000" in reason
+
+    def test_validate_non_string_source(self):
+        from skills.rag_ingest import RagIngestSkill
+        ok, reason = RagIngestSkill().validate({"text": "ok", "source": 99})
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_execute_adds_chunks_and_returns_count(self):
+        import sys
+        from skills.rag_ingest import RagIngestSkill
+
+        mock_collection = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.get_or_create_collection.return_value = mock_collection
+        mock_chroma_module = MagicMock()
+        mock_chroma_module.HttpClient.return_value = mock_instance
+        mock_ef = MagicMock()
+        mock_ef_module = MagicMock()
+        mock_ef_module.DefaultEmbeddingFunction = MagicMock(return_value=mock_ef)
+
+        with patch.dict(sys.modules, {
+            "chromadb": mock_chroma_module,
+            "chromadb.utils.embedding_functions": mock_ef_module,
+        }):
+            result = await RagIngestSkill().execute({"text": "hello world", "source": "test"})
+
+        assert result["chunks_added"] >= 1
+        assert result["source"] == "test"
+        mock_collection.add.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_default_source_is_agent(self):
+        import sys
+        from skills.rag_ingest import RagIngestSkill
+
+        mock_collection = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.get_or_create_collection.return_value = mock_collection
+        mock_chroma_module = MagicMock()
+        mock_chroma_module.HttpClient.return_value = mock_instance
+        mock_ef_module = MagicMock()
+        mock_ef_module.DefaultEmbeddingFunction = MagicMock(return_value=MagicMock())
+
+        with patch.dict(sys.modules, {
+            "chromadb": mock_chroma_module,
+            "chromadb.utils.embedding_functions": mock_ef_module,
+        }):
+            result = await RagIngestSkill().execute({"text": "some text"})
+
+        assert result["source"] == "agent"
+
+    @pytest.mark.asyncio
+    async def test_execute_chromadb_error_returns_error_dict(self):
+        import sys
+        from skills.rag_ingest import RagIngestSkill
+
+        mock_chroma_module = MagicMock()
+        mock_chroma_module.HttpClient.side_effect = Exception("connection refused")
+        mock_ef_module = MagicMock()
+        mock_ef_module.DefaultEmbeddingFunction = MagicMock()
+
+        with patch.dict(sys.modules, {
+            "chromadb": mock_chroma_module,
+            "chromadb.utils.embedding_functions": mock_ef_module,
+        }):
+            result = await RagIngestSkill().execute({"text": "hello"})
+
+        assert "error" in result
+        assert "connection refused" in result["error"]
+
+    def test_sanitize_output_success(self):
+        from skills.rag_ingest import RagIngestSkill
+        out = RagIngestSkill().sanitize_output({"chunks_added": 3, "source": "user note"})
+        assert "3" in out
+        assert "user note" in out
+
+    def test_sanitize_output_error(self):
+        from skills.rag_ingest import RagIngestSkill
+        out = RagIngestSkill().sanitize_output({"error": "timeout"})
+        assert "failed" in out.lower()
+        assert "timeout" in out
+
+    def test_chunk_text_splits_long_text(self):
+        from skills.rag_ingest import _chunk_text
+        text = "a" * 2000
+        chunks = _chunk_text(text, chunk_size=800, overlap=100)
+        assert len(chunks) > 1
+        assert all(len(c) <= 800 for c in chunks)
+
+    def test_chunk_text_short_text_is_single_chunk(self):
+        from skills.rag_ingest import _chunk_text
+        chunks = _chunk_text("short text", chunk_size=800, overlap=100)
+        assert len(chunks) == 1
+        assert chunks[0] == "short text"
+
+    def test_chunk_text_overlap_produces_continuity(self):
+        from skills.rag_ingest import _chunk_text
+        text = "x" * 900
+        chunks = _chunk_text(text, chunk_size=800, overlap=100)
+        # Second chunk should start 700 chars in (800 - 100 overlap)
+        assert len(chunks) == 2
+        assert len(chunks[1]) == 200  # 900 - 700 = 200
 
 
 # ---------------------------------------------------------------------------

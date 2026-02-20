@@ -15,6 +15,7 @@ import identity as identity_module
 import bootstrap
 import tracing
 from skills.registry import SkillRegistry
+from skills.rag_ingest import RagIngestSkill
 from skills.rag_search import RagSearchSkill
 from skills.web_search import WebSearchSkill
 from skill_runner import run_tool_loop
@@ -50,6 +51,7 @@ app.include_router(approval_router)
 
 # Skill registry
 skill_registry = SkillRegistry()
+skill_registry.register(RagIngestSkill())
 skill_registry.register(RagSearchSkill())
 skill_registry.register(WebSearchSkill())
 

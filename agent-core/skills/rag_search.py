@@ -62,10 +62,14 @@ class RagSearchSkill(SkillBase):
 
         query = params["query"]
         try:
+            from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+            ef = DefaultEmbeddingFunction()
             chroma_client = chromadb.HttpClient(
                 host=self.CHROMA_HOST, port=self.CHROMA_PORT
             )
-            collection = chroma_client.get_collection(self.COLLECTION_NAME)
+            collection = chroma_client.get_or_create_collection(
+                self.COLLECTION_NAME, embedding_function=ef
+            )
             results = collection.query(query_texts=[query], n_results=self.N_RESULTS)
             return results["documents"][0]
         except Exception:

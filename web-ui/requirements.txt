@@ -2,7 +2,6 @@ streamlit
 ollama
 langchain
 langchain-community
-langchain-chroma
 langchain-text-splitters
 chromadb
 chromadb[all]

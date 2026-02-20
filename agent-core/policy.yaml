@@ -30,6 +30,9 @@ rate_limits:
   default:
     max_calls: 30
     window_seconds: 60
+  rag_ingest:
+    max_calls: 10
+    window_seconds: 60
   rag_search:
     max_calls: 20
     window_seconds: 60

@@ -4,8 +4,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_community.chat_models import ChatOllama
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain_chroma import Chroma
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 import time
 import chromadb
 import json
@@ -172,30 +171,32 @@ def clear_chat():
 def add_to_rag_database(text, source_name="manual input"):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_text(text)
-    
-    embeddings = initialize_embeddings()
-    vectorstore = Chroma(collection_name="rag_data", embedding_function=embeddings, client=chroma_client)
-    
+
+    ef = DefaultEmbeddingFunction()
+    collection = chroma_client.get_or_create_collection("rag_data", embedding_function=ef)
     metadatas = [{"source": source_name} for _ in chunks]
     ids = [str(uuid.uuid4()) for _ in chunks]
-    vectorstore.add_texts(texts=chunks, ids=ids, metadatas=metadatas)
-    st.success(f"Text added to RAG database successfully from source: {source_name}!")
-
-def initialize_embeddings():
-    embeddings = OllamaEmbeddings(model="all-minilm")
-    return embeddings
+    collection.add(documents=chunks, ids=ids, metadatas=metadatas)
+    st.success(f"Added {len(chunks)} chunk(s) to RAG database from source: {source_name}!")
 
 def get_relevant_context(query, similarity_threshold=0.5):
     if st.session_state.storage_type == "No Embeddings":
         return None
-    
-    embeddings = initialize_embeddings()
-    vectorstore = Chroma(collection_name="rag_data", embedding_function=embeddings, client=chroma_client)
-    results = vectorstore.similarity_search_with_score(query, k=2)
-    relevant_results = [doc.page_content for doc, score in results if score >= similarity_threshold]
-    if relevant_results:
-        return "\n".join(relevant_results)
-    return None
+
+    try:
+        ef = DefaultEmbeddingFunction()
+        collection = chroma_client.get_or_create_collection("rag_data", embedding_function=ef)
+        results = collection.query(query_texts=[query], n_results=2)
+        docs = results.get("documents", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        # DefaultEmbeddingFunction produces normalized vectors; ChromaDB returns
+        # squared L2 distances in [0, 2] where 0 = identical. Convert threshold:
+        # similarity = 1 - (distance / 2), so max_distance = 2 * (1 - threshold)
+        max_distance = 2.0 * (1.0 - similarity_threshold)
+        relevant = [doc for doc, dist in zip(docs, distances) if dist <= max_distance]
+        return "\n".join(relevant) if relevant else None
+    except Exception:
+        return None
 
 def regenerate_response(index):
     if index > 1 and isinstance(st.session_state.messages[index], AIMessage):
