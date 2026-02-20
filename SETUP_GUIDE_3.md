@@ -335,7 +335,7 @@ pip install pyyaml pytest pytest-asyncio
 python -m pytest tests/ -v
 ```
 
-Expected output: **158 tests passed** in under 4 seconds.
+Expected output: **158 tests passed** in under 4 seconds (at this point in the build — Phase 4A adds more later).
 
 ### What the new tests cover
 
@@ -468,7 +468,7 @@ Plus event-specific fields:
 
 ## What's Next
 
-This guide established the observability layer. The health dashboard (Chunk 3C) is now built on top of it:
+This guide established the observability layer. The health dashboard (Chunk 3C) and skill framework (Chunk 4A) are now built on top of it:
 
 1. **Health Dashboard (Chunk 3C)** ✅ — A separate Streamlit service (`dashboard/` on port 8502) that reads from these Redis log lists. Five panels: System Health (HTTP probes for all services), Activity (request counts, channel breakdown, response times), Queue & Jobs (placeholder + pending approvals), Recent Activity Feed (filterable log tail), and Security & Audit (policy denials + approval history). Auto-refreshes every 10 seconds. See `dashboard/app.py`, `dashboard/redis_queries.py`, and `dashboard/health_probes.py`.
-2. **Skill Framework (Chunk 4A)** — When skills are added, `log_skill_call()` and `log_policy_decision()` will be wired into the skill execution pipeline, giving full visibility into every tool the agent uses
+2. **Skill Framework (Chunk 4A)** ✅ — `log_skill_call()` is now wired into the `execute_skill()` pipeline. Every tool call is traced with `skill_name`, `status` (success/error/rate_limited), and `duration_ms`. The dashboard's skill execution counts and response-time panels are populated from `logs:skill`.

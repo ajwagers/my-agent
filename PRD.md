@@ -1,14 +1,14 @@
 # My-Agent: Product Requirements Document
 
-> **Last Updated:** 2026-02-18
+> **Last Updated:** 2026-02-20
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Next up: Phase 4 (Skill Framework + Skills).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). Next up: Phase 4B (additional skills).
 
 ---
 
 ## 1. Project Overview
 
-**My-Agent** is a self-hosted, multi-interface AI agent stack running entirely on local hardware via Docker. It wraps locally-hosted LLMs (Ollama with Phi-3 Mini for fast tasks and Llama 3.1 8B for reasoning) behind a central FastAPI service, with multiple frontends (CLI, Telegram bot, Streamlit web UI) and optional RAG via ChromaDB.
+**My-Agent** is a self-hosted, multi-interface AI agent stack running entirely on local hardware via Docker. It wraps locally-hosted LLMs (Ollama with Phi-3 Mini for fast tasks, Llama 3.1 8B for reasoning, and Qwen 2.5 14B for tool calling and deep tasks) behind a central FastAPI service, with multiple frontends (CLI, Telegram bot, Streamlit web UI) and optional RAG via ChromaDB. The agent can search the web in real time via the Tavily API and query uploaded documents via ChromaDB.
 
 The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a local-first, action-oriented AI agent that runs on your own machine, connects to your chat apps, and can eventually execute real tasks with persistent memory.
 
@@ -144,24 +144,36 @@ The agent can explore the internet and external services freely. Any action that
 User input (Telegram / Web UI / CLI)
   → POST http://agent-core:8000/chat
     body: { message, model (optional), user_id, channel, auto_approve }
-  → agent-core checks for "search docs" keyword
-    → YES: query ChromaDB, return documents
-    → NO:
-      → Load identity files from /agent (hot-reload on every request)
-      → build_system_prompt(): bootstrap mode uses BOOTSTRAP.md, normal mode uses SOUL.md + AGENTS.md + USER.md
-      → route_model() selects model:
-        - model="deep" alias → DEEP_MODEL (qwen2.5:14b)
-        - model="reasoning" alias → REASONING_MODEL (llama3.1:8b)
-        - model=<specific> → use as-is (client override)
-        - model=None → auto-route: check message for reasoning keywords
-          → match → REASONING_MODEL (llama3.1:8b)
-          → no match → DEFAULT_MODEL (phi3:latest)
-      → Load conversation history from Redis (per user_id)
-      → Truncate history to HISTORY_TOKEN_BUDGET (skipped during bootstrap)
-      → Prepend system prompt + send history + new message to Ollama
-      → If bootstrap mode: extract file proposals, validate, send through approval gate
-      → Save updated history to Redis
-      → Structured tracing: log_chat_request() + log_chat_response() with Ollama metrics
+  → Load identity files from /agent (hot-reload on every request)
+  → build_system_prompt():
+      - Prepend current date/time (UTC) as first line
+      - bootstrap mode: BOOTSTRAP.md + AGENTS.md
+      - normal mode: SOUL.md + AGENTS.md + USER.md
+      - If skills registered: append Tool Usage rules (when to search, anti-hallucination rules)
+  → route_model() selects model:
+      - model="deep" alias → DEEP_MODEL (qwen2.5:14b, 16K ctx)
+      - model="reasoning" alias → REASONING_MODEL (llama3.1:8b)
+      - model=<specific> → use as-is (client override)
+      - model=None + skills registered → TOOL_MODEL (qwen2.5:14b)
+      - model=None + no skills → keyword heuristic → REASONING_MODEL or DEFAULT_MODEL
+  → Load conversation history from Redis (per user_id)
+  → Truncate history to HISTORY_TOKEN_BUDGET (skipped during bootstrap)
+  → run_tool_loop() (Ollama tool-calling loop, up to MAX_TOOL_ITERATIONS):
+      loop:
+        → Call Ollama with messages + available tools
+        → If no tool calls: return final text (with auto-retry nudge if model refused to search)
+        → For each tool call:
+            → policy_engine.check_rate_limit()
+            → skill.validate(params)
+            → approval gate (if skill.requires_approval and not auto_approve)
+            → skill.execute(params) with timing
+            → skill.sanitize_output(result)
+            → tracing.log_skill_call(skill_name, status, duration_ms)
+        → Append tool results to messages, repeat
+      → If max iterations hit: ask model for final answer with gathered info
+  → If bootstrap mode: extract file proposals, validate, send through approval gate
+  → Save user+assistant turns to Redis (tool turns NOT saved — Ollama context only)
+  → Structured tracing: log_chat_request() + log_chat_response() with tool_iterations + skills_called
   → Response JSON: { response: "...", model: "<model used>", trace_id: "<16-char hex>" }
 ← Frontend displays response to user
 ```
@@ -178,42 +190,49 @@ User input (Telegram / Web UI / CLI)
 - Models:
   - `phi3:latest` (3.8B params, CPU-friendly) — default fast model
   - `llama3.1:8b` (8B params) — reasoning model for complex tasks
+  - `qwen2.5:14b` (14B params) — tool calling model and deep/long-context tasks (TOOL_MODEL + DEEP_MODEL)
 - Persistent volume `ollama_data` at `/root/.ollama`
 - Healthcheck: `ollama list` every 30s
 - No host port exposed (internal only via `agent_net`)
-- **Note:** `llama3.1:8b` must be pulled manually: `docker exec ollama-runner ollama pull llama3.1:8b`
+- **Note:** Models must be pulled manually: `docker exec ollama-runner ollama pull <model>`
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage & bootstrap channel gate)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, and skill framework with web_search + rag_search)**
 
-The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, and a CLI-only gate on bootstrap mode.
+The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, CLI-only gate on bootstrap mode, and a modular skill framework supporting Ollama tool calling.
 
 **Files:**
 
 | File | Purpose |
 |---|---|
-| `app.py` | FastAPI service with `/chat`, `/health`, `/bootstrap/status`, `/chat/history/{user_id}`, `/policy/reload`, `/approval/*` endpoints. Integrates identity loading, bootstrap proposal handling, approval gates, structured tracing, and bootstrap channel gate (rejects non-CLI requests when bootstrap mode is active). |
+| `app.py` | FastAPI service with `/chat`, `/health`, `/bootstrap/status`, `/chat/history/{user_id}`, `/policy/reload`, `/approval/*` endpoints. Integrates identity loading, bootstrap proposal handling, approval gates, structured tracing, bootstrap channel gate, skill registry, and tool-calling loop. System prompt injects current date/time at the top and appends explicit tool-usage rules when skills are registered. |
 | `cli.py` | Click CLI with `chat` (supports `--model`, `--reason`/`-r`, `--session`), `serve`, `bootstrap` (first-run), and `bootstrap-reset` (emergency identity wipe + redo) commands |
-| `tools.py` | Tool definitions (stub only, not wired in — sandbox paths updated to `/sandbox`) |
-| `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval, enhanced sanitization (`_SENSITIVE_KEYS` includes `authorization` and `x-api-key`; `_scrub_url_credentials()` strips embedded URL credentials; `response_preview` sanitized before logging), query helper for dashboard |
-| `policy.yaml` | Zone rules, rate limits, approval settings, denied URL patterns (mounted read-only) |
+| `skill_runner.py` | Two public functions: `execute_skill()` (rate-limit → validate → approval gate → execute → sanitize → trace, never raises) and `run_tool_loop()` (Ollama tool-call loop with per-skill call limits, auto-retry on model refusal, returns `(text, messages, stats)`). |
+| `secret_broker.py` | `get(key)` — reads env var at call time, raises `RuntimeError` if unset. LLM never sees raw credential values. |
+| `skills/__init__.py` | Empty package marker |
+| `skills/base.py` | `SkillMetadata` dataclass + abstract `SkillBase` class with `validate()`, `execute()`, `sanitize_output()`, `to_ollama_tool()` concrete method |
+| `skills/registry.py` | `SkillRegistry` — register, get, all_skills, to_ollama_tools, `__len__`. Raises `ValueError` on duplicate name. |
+| `skills/rag_search.py` | `RagSearchSkill` — ChromaDB vector search. LOW risk, no approval, rate-limited. Replaces old hardcoded "search docs" keyword hack. |
+| `skills/web_search.py` | `WebSearchSkill` — Tavily REST API web search. LOW risk, no approval, rate-limited (3/turn). Strips HTML, `javascript:`, `data:`, and prompt injection phrases from results. API key via secret broker. |
+| `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval, enhanced sanitization, query helper for dashboard. `log_skill_call()` captures `skill_name`, `status`, `duration_ms`. |
+| `policy.yaml` | Zone rules, rate limits (including `rag_search` and `web_search`), approval settings, denied URL patterns (mounted read-only) |
 | `policy.py` | Central policy engine: 4-zone model, hard-coded deny-list, rate limiting, access checks |
 | `approval.py` | Approval gate manager: Redis hash storage, pub/sub notifications, async wait, timeout, proposed_content support, tracing hooks |
 | `approval_endpoints.py` | FastAPI router for approval inspection and resolution |
 | `identity.py` | Identity file loader: reads SOUL.md, IDENTITY.md, USER.md, AGENTS.md, BOOTSTRAP.md from `/agent`. Builds composite system prompt. Detects bootstrap mode. Hot-reloads on every request. |
 | `bootstrap.py` | Bootstrap proposal parser: extracts `<<PROPOSE:FILE.md>>` markers from LLM output, validates filenames and content, checks bootstrap completion, deletes BOOTSTRAP.md when done |
-| `skill_contract.py` | Abstract `SkillBase` class defining the interface for all future skills |
+| `skill_contract.py` | Abstract `SkillBase` class (legacy stub, superseded by `skills/base.py`) |
 | `agent` | Shell wrapper (`#!/bin/bash`) so `agent chat "msg"` works on PATH |
 | `Dockerfile` | Python 3.12, installs deps, copies CLI to `/usr/local/bin/agent` |
 | `requirements.txt` | fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml |
-| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing), runnable without Docker |
+| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills), runnable without Docker — **229 tests total** |
 
 **API Endpoints:**
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/chat` | `X-Api-Key` required | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt, routes to ChromaDB or Ollama, handles bootstrap proposals. Returns `{ response, model, trace_id }`. During bootstrap mode, returns 403 for any channel other than `"cli"`. |
+| POST | `/chat` | `X-Api-Key` required | Main chat endpoint. Accepts `ChatRequest` (message, model, user_id, channel, auto_approve). Loads identity, builds system prompt (with current date/time at top + tool usage rules), routes through `run_tool_loop()` with registered skills, handles bootstrap proposals. Returns `{ response, model, trace_id }`. During bootstrap mode, returns 403 for any channel other than `"cli"`. |
 | GET | `/health` | None | Returns `{"status": "healthy"}`. Used by Docker healthcheck and dependent services. Must remain open. |
 | GET | `/bootstrap/status` | None | Returns `{"bootstrap": true/false}`. Checks if BOOTSTRAP.md exists. |
 | GET | `/chat/history/{user_id}` | `X-Api-Key` required | Retrieve conversation history for a session from Redis. |
@@ -234,18 +253,22 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 }
 ```
 
-**Model routing (`route_model()`):**
+**Model routing (`route_model()` + TOOL_MODEL override):**
 - `model="deep"` → resolves to `DEEP_MODEL` (qwen2.5:14b with 16K context)
 - `model="reasoning"` → resolves to `REASONING_MODEL` (special alias)
 - `model=<any other value>` → used as-is (client override)
-- `model=null` (default) → auto-route based on message content: if any reasoning keyword is detected (`explain`, `analyze`, `plan`, `code`, `why`, `compare`, `debug`, `reason`, `think`, `step by step`, `how does`, `what if`), uses `REASONING_MODEL`; otherwise uses `DEFAULT_MODEL`
+- `model=null` (default) → auto-route based on message content, then override with `TOOL_MODEL` if skills are registered:
+  - If skills registered and `model=null`: always use `TOOL_MODEL` (qwen2.5:14b) — handles both tool calling and reasoning
+  - If no skills or explicit model provided: keyword heuristic picks `REASONING_MODEL` or `DEFAULT_MODEL`
+  - Reasoning keywords: `explain`, `analyze`, `plan`, `code`, `why`, `compare`, `debug`, `reason`, `think`, `step by step`, `how does`, `what if`
 
 **Current limitations:**
 - ~~**Stateless** - Every `/chat` call is independent. No conversation history.~~ FIXED (Chunk 2B): Redis-backed conversation memory with token-budget truncation.
-- **No tool execution** - `tools.py` defines tools as a dict but nothing reads or executes them.
-- ~~**Single model** - Always uses the model specified in the request (defaults to phi3). No routing logic.~~ FIXED (Chunk 2C): `route_model()` auto-routes between phi3 (fast) and llama3.1:8b (reasoning) based on message keywords, with client override and `--reason` flag support.
-- **RAG routing is keyword-based** - Checks for literal string "search docs" in the message. Not intelligent routing.
+- ~~**No tool execution** - `tools.py` defines tools as a dict but nothing reads or executes them.~~ FIXED (Phase 4A): Full Ollama tool-calling loop with `web_search` and `rag_search` skills.
+- ~~**Single model** - Always uses the model specified in the request (defaults to phi3). No routing logic.~~ FIXED (Chunk 2C + 4A): `route_model()` auto-routes; `TOOL_MODEL` (qwen2.5:14b) used for all auto-routed requests when skills are registered.
+- ~~**RAG routing is keyword-based** - Checks for literal string "search docs" in the message.~~ FIXED (Phase 4A): Replaced with `rag_search` skill called by the LLM via tool calling.
 - ~~**`requirements.txt` is missing `chromadb`** - Fixed: `chromadb` added to requirements.txt.~~
+- **Web UI bypasses agent-core** — web-ui talks directly to Ollama via LangChain, bypassing skills and the policy engine.
 
 ### 3.3 telegram-gateway
 
@@ -289,7 +312,7 @@ REDIS_URL=redis://redis:6379       # For approval pub/sub (set in compose)
 - Persistent volume `chroma_data` at `/chroma/chroma`
 - Internal port 8000, host port 8100
 - Runs via `chroma run --host 0.0.0.0 --port 8000`
-- Used by agent-core's `rag_tool()` function and by the web UI for embeddings + chat persistence
+- Used by agent-core's `RagSearchSkill` (via Ollama tool calling) and by the web UI for embeddings + chat persistence
 
 ### 3.5 web-ui
 
@@ -375,15 +398,22 @@ my-agent/
 │   ├── requirements.txt        # fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml
 │   ├── app.py                  # FastAPI: /chat, /health, /bootstrap/status, /chat/history, /policy/reload, /approval/*
 │   ├── cli.py                  # Click CLI: chat, serve commands
-│   ├── tools.py                # Tool definitions (STUB - not wired in)
+│   ├── skill_runner.py         # execute_skill() pipeline + run_tool_loop() Ollama tool-call driver
+│   ├── secret_broker.py        # get(key) — reads env var at call time, never exposes to LLM
+│   ├── skills/
+│   │   ├── __init__.py         # Package marker
+│   │   ├── base.py             # SkillMetadata dataclass + abstract SkillBase class
+│   │   ├── registry.py         # SkillRegistry: register, get, to_ollama_tools, __len__
+│   │   ├── rag_search.py       # RagSearchSkill — ChromaDB vector search (replaces keyword hack)
+│   │   └── web_search.py       # WebSearchSkill — Tavily API, output sanitization, prompt injection guards
 │   ├── tracing.py              # Structured JSON tracing: context vars, event emitters, Redis log storage
-│   ├── policy.yaml             # Zone rules, rate limits, approval config (read-only mount)
+│   ├── policy.yaml             # Zone rules, rate limits (rag_search, web_search), approval config (read-only mount)
 │   ├── policy.py               # Central policy engine (zones, deny-list, rate limits)
 │   ├── approval.py             # Approval gate manager (Redis hash + pub/sub + proposed_content + tracing hooks)
 │   ├── approval_endpoints.py   # REST router: /approval/pending, /{id}, /{id}/respond
 │   ├── identity.py             # Identity file loader, system prompt builder, bootstrap detection
 │   ├── bootstrap.py            # Bootstrap proposal parser, validator, completion checker
-│   ├── skill_contract.py       # Abstract SkillBase class for all future skills
+│   ├── skill_contract.py       # Abstract SkillBase (legacy stub, superseded by skills/base.py)
 │   ├── agent                   # Shell wrapper for CLI on PATH
 │   └── tests/
 │       ├── __init__.py
@@ -392,7 +422,8 @@ my-agent/
 │       ├── test_approval.py    # 13 tests: create, resolve, timeout, get_pending
 │       ├── test_identity.py    # Identity loader tests: bootstrap detection, file loading, prompt building
 │       ├── test_bootstrap.py   # Bootstrap parser tests: proposal extraction, validation, completion, approval integration
-│       └── test_tracing.py     # 55 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization (TestSanitization: 17 tests)
+│       ├── test_tracing.py     # 55 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization
+│       └── test_skills.py      # ~65 tests: SkillBase, SkillRegistry, execute_skill pipeline, RagSearchSkill, WebSearchSkill, SecretBroker, run_tool_loop (no-tools, with-tools, per-turn limits, auto-retry on refusal)
 │
 │
 ├── agent-identity/             # Bind-mounted to /agent in container (Zone 2)
@@ -455,8 +486,9 @@ my-agent/
 | 13 | ~~Redis unauthenticated~~ | **High** | `docker-compose.yml` | Redis had no password. Any container on `agent_net` could read conversation history, approval data, and all logs. | FIXED |
 | 14 | ~~agent-core port bound to 0.0.0.0~~ | **Medium** | `docker-compose.yml` | Port 8000 was bound to all interfaces, exposing the agent to every device on the LAN. Changed to `127.0.0.1:8000:8000`. | FIXED |
 | 15 | ~~Bootstrap mode accessible from any channel~~ | **High** | `agent-core/app.py` | When `BOOTSTRAP.md` was present, Telegram or web-ui messages could participate in the identity creation conversation, allowing remote influence over `SOUL.md`, `IDENTITY.md`, and `USER.md`. Fixed with CLI-only channel gate (HTTP 403 for all other channels). Emergency reset via `agent bootstrap-reset` requires host machine access and `RESET` confirmation. | FIXED |
-| 16 | Rate limiting is in-memory only | **Low** | `agent-core/policy.py` | The sliding window rate limiter resets on container restart. No impact until skills exist (nothing to rate-limit yet). Deferred to Phase 4A when the skill execution pipeline is built — Redis-backed rate limiting will be added at that point. | DEFERRED → 4A |
-| 17 | Web UI bypasses agent-core | **Medium** | `web-ui/app.py` | Web UI talks directly to Ollama via LangChain instead of routing through agent-core. Policy engine, rate limiting, tracing, and future skills do not apply to web UI conversations. Deferred — will be addressed when Phase 4 skills are built, at which point routing web UI through agent-core becomes necessary for feature parity. | DEFERRED → 4A |
+| 16 | Rate limiting is in-memory only | **Low** | `agent-core/policy.py` | The sliding window rate limiter resets on container restart. Skills are now built and rate-limited, but the window resets on restart. Deferred to Phase 4B. | DEFERRED → 4B |
+| 17 | Web UI bypasses agent-core | **Medium** | `web-ui/app.py` | Web UI talks directly to Ollama via LangChain instead of routing through agent-core. Policy engine, rate limiting, tracing, and skills (web_search, rag_search) do not apply to web UI conversations. Deferred — will be addressed in a future phase. | DEFERRED |
+| 18 | Tool-calling model hallucination | **Medium** | `agent-core/skill_runner.py` | qwen2.5:14b sometimes calls web_search correctly but then ignores the results and invents an answer from training data (especially for sports/news). Mitigated with "base your answer ONLY on search results" instructions and auto-retry on refusal, but not fully solved at the model level. | OPEN — model limitation |
 
 ---
 
@@ -476,8 +508,9 @@ The roadmap is designed to reach feature parity with Openclaw's core architectur
 | Soul / Persona file | Conversational bootstrap (Openclaw-inspired) with policy-gated file writes. SOUL.md, IDENTITY.md, USER.md co-authored by agent + owner. | 2A (done) |
 | Conversation memory | Redis rolling history per user/session | 2 (done) |
 | Policy, guardrails, observability | Four-zone permission model, approval gates, rate limits, structured tracing, health dashboard. **Built before soul/bootstrap.** | 3A (done), 3B (done), 3C (done) |
-| Modular skill system | Local `skills/` directory, hand-built or vetted, no external marketplaces. Each skill enforces its own security. | 4A |
-| First skills (search, files, RAG) | Web search, URL fetch, file read/write, PDF parse, RAG retrieval. Secret broker for API keys. | 4B |
+| Modular skill system | Local `skills/` directory, hand-built or vetted, no external marketplaces. Each skill enforces its own security. | 4A (done) |
+| First skills (search, RAG) | Web search (Tavily) + RAG retrieval (ChromaDB) via Ollama tool calling. Secret broker for API keys. | 4A (done) |
+| More skills (files, URL fetch, PDF) | URL fetch, file read/write, PDF parse. | 4B |
 | Memory & scheduled tasks | Persistent memory with sanitization layer, heartbeat/cron, task management. | 4C |
 | Full system access (files, shell, APIs) | Four-zone model: `/sandbox` (free), `/agent` (approval), system (never), external (explore free, act with approval). Docker isolation + policy engine. | 4B-4F |
 | Credential security | Secret broker pattern — LLM never sees raw credentials | 4B |
@@ -511,12 +544,12 @@ Openclaw's power comes from giving the agent real system access — and that's a
 
 The following items are intentionally deferred — they either have no impact until skills exist, or are addressed as part of Phase 4 design:
 
-- **Rate limiting durability** (→ Phase 4A) — In-memory sliding window resets on container restart. Will be replaced with Redis-backed rate limiting when the skill execution pipeline is built.
+- **Rate limiting durability** (→ Phase 4B) — In-memory sliding window resets on container restart. Skills are now rate-limited but the window resets on restart. Redis-backed rate limiting deferred to 4B.
 - **URL deny-list bypass hardening** (→ Phase 4B) — Hardened URL validation (DNS rebinding, unusual ports, Docker service name resolution) is a design requirement of the `url_fetch` skill, not a current gap.
 - **Shell deny-list regex hardening** (→ Phase 4F) — Obfuscation-resistant deny patterns are a design requirement of `shell_exec`. No shell skill exists yet.
-- **Skill `sanitize_output()` enforcement** (→ Phase 4A) — All skills must implement this method; the policy engine will enforce it at execution time. Part of 4A framework design.
+- ~~**Skill `sanitize_output()` enforcement** (→ Phase 4A)~~ — DONE. All skills implement `sanitize_output()`; the `execute_skill()` pipeline enforces it at execution time.
 - **Container hardening** (→ Chunk 3D) — Non-root user, read-only filesystem, seccomp/AppArmor profiles. Intentionally deferred.
-- **Web UI → agent-core routing** (→ Phase 4A) — Web UI currently talks directly to Ollama, bypassing the policy engine and all future skills. Will be fixed when Phase 4 skills are added, at which point routing through agent-core becomes necessary for feature parity.
+- **Web UI → agent-core routing** (→ Future) — Web UI currently talks directly to Ollama, bypassing the policy engine and skills. Deferred.
 
 ### Legend
 
@@ -800,46 +833,30 @@ A dedicated Streamlit dashboard (separate service on port 8502) showing the oper
 >
 > **Security note:** Unlike Openclaw, we do NOT use external plugin marketplaces (MCP, ClawHub, community directories). All skills are local Python modules, written by us or carefully vetted. The system is modular but curated. Each skill implements its own input validation, risk classification, rate limiting, and output sanitization. All tool output (especially web content) is treated as adversarial and sanitized before re-entering the LLM context.
 
-#### Chunk 4A: Skill Framework
+#### Chunk 4A: Skill Framework ✅
 
-**Priority: HIGH — Must be built first. All skills depend on this.**
+**Status: COMPLETE**
 
-Turn `tools.py` from a stub into a modular, locally-managed skill system.
+**What was implemented:**
+- `agent-core/skills/base.py` — `SkillMetadata` dataclass + abstract `SkillBase` with `validate()`, `execute()`, `sanitize_output()`, `to_ollama_tool()` concrete helper. `validate()` returns `(bool, str)` tuple (reason included). Parameters defined as JSON Schema for Ollama.
+- `agent-core/skills/registry.py` — `SkillRegistry` with `register()`, `get()`, `all_skills()`, `to_ollama_tools()`, `__len__()`. Raises `ValueError` on duplicate name. Callers use `registry.to_ollama_tools() or None` (empty list vs. None matters for Ollama).
+- `agent-core/secret_broker.py` — `get(key)` reads env var at call time. Raises `RuntimeError` if unset/empty. No caching. LLM never sees returned values.
+- `agent-core/skills/rag_search.py` — `RagSearchSkill`: ChromaDB `HttpClient` query, LOW risk, no approval, rate-limited (`rag_search` key in policy.yaml, 20/min). `sanitize_output()` joins docs, truncates at 2000 chars. Replaces hardcoded "search docs" keyword check.
+- `agent-core/skills/web_search.py` — `WebSearchSkill`: Tavily REST API, LOW risk, no approval, max 3 calls/turn. `sanitize_output()` strips HTML tags, `javascript:`, `data:` URIs, and prompt injection phrases (`ignore previous`, `system prompt`, `disregard instructions`) from results. Each snippet capped at 1000 chars. API key via secret broker.
+- `agent-core/skill_runner.py` — Two public async functions:
+  - `execute_skill()`: rate-limit → validate → approval gate → execute (timed) → sanitize_output → log_skill_call. Never raises — all errors returned as strings.
+  - `run_tool_loop()`: Ollama tool-calling loop with per-skill call limits, auto-retry when model refuses to use tools (detects phrases like "don't have real-time access", injects nudge message, retries once). Returns `(final_text, updated_messages, stats)`.
+- `agent-core/app.py` — Wired skills: registry + tool loop. Current date/time prepended to top of system prompt. Tool usage rules block appended when skills registered. TOOL_MODEL used for all auto-routed requests. History saved clean (tool turns not persisted to Redis).
+- `agent-core/policy.yaml` — Added `rag_search` rate limit (20/min).
+- `docker-compose.yml` — Added `TOOL_MODEL=qwen2.5:14b`, `MAX_TOOL_ITERATIONS=5`, `TAVILY_API_KEY`.
+- `agent-core/tests/test_skills.py` — ~65 tests: SkillBase/Registry, execute_skill pipeline (rate limit, validation, approval, errors, tracing), RagSearchSkill, WebSearchSkill, SecretBroker, run_tool_loop (no-tools, with-tools, per-turn limits, max iterations, auto-retry on refusal).
 
-**Scope:**
-- Evolve `skill_contract.py` (from Chunk 3A) into a full `agent-core/skills/base.py` implementing the Security Contract:
-  - `name`, `description` (for the LLM to understand what it does)
-  - `parameters` (JSON Schema)
-  - `risk_level` — "low", "medium", or "high"
-  - `rate_limit` — max calls per time window
-  - `requires_approval: bool` flag (derived from risk_level, overridable in policy.yaml)
-  - `validate(params) -> bool` — skill-specific input validation (e.g., file paths checked against zone rules, shell commands checked against deny-list)
-  - `execute(params) -> result` handler function
-  - `sanitize_output(result) -> result` — strip secrets, truncate large outputs, neutralize prompt injection in tool results
-- Every skill call passes through the policy engine (Phase 3A) before execution:
-  1. Policy engine checks rate limits
-  2. Policy engine checks approval requirements
-  3. Skill's own `validate()` runs
-  4. If all pass, `execute()` runs
-  5. `sanitize_output()` cleans the result before it enters the LLM context
-  6. Tracing (Phase 3B) logs the entire chain
-- Implement a skill registry that loads skills from the local `skills/` directory at startup
-  - **No remote skill fetching, no auto-discovery from external sources**
-  - Adding a new skill = drop a Python file in `skills/` and restart agent-core
-- Implement the tool execution loop in agent-core:
-  1. Send user message + soul prompt + conversation history + available skills to Ollama
-  2. If Ollama responds with a skill call, run it through the policy → validate → execute → sanitize pipeline
-  3. Feed the sanitized skill result back to Ollama
-  4. Repeat until Ollama responds with a final text answer or hits max iterations (from policy)
-- Wire the RAG tool as the first skill (replace the hardcoded "search docs" keyword check)
-- Ollama supports tool calling with compatible models (may need to switch to Llama 3.1+ or Mistral for good tool-use support)
-- **Secret broker module** — skills call `secret_broker.get("TAVILY_API_KEY")` at execution time. The LLM context window NEVER contains raw credentials — only the query and sanitized results. Secrets stored in Docker secrets (preferred) or `.env` (development), never in agent-accessible config.
-
-**Key decisions:**
-- Which model to use for tool calling (phi3 may not support it well — this may force the brain-vs-muscle split)
-- Max tool call iterations (prevent infinite loops — configured in policy, e.g., 5)
-- Error handling when skills fail
-- Approval gate UX: how does the agent ask for confirmation? (Telegram message? Web UI prompt?)
+**Key decisions made:**
+- `TOOL_MODEL=qwen2.5:14b` — better tool calling than llama3.2:latest or phi3. qwen2.5:14b serves as both TOOL_MODEL and DEEP_MODEL.
+- Tool arguments may arrive as JSON string or dict — handled with `json.loads()` fallback.
+- Per-skill call limits (e.g., `max_calls_per_turn=3` for web_search) prevent infinite tool loops within a single turn.
+- Auto-retry nudge fires only once per request (iteration == 0 and no skills called yet) to avoid loop.
+- History separation: `updated_messages` (with tool turns) used only for Ollama context within one request; Redis history stores only clean user/assistant pairs.
 
 ---
 
@@ -1074,6 +1091,7 @@ The following capabilities are explicitly deferred:
 | LLM Runtime | Ollama | latest | Local model inference |
 | Default Model | Phi-3 Mini | phi3:latest | 3.8B params, CPU-friendly, fast tasks |
 | Reasoning Model | Llama 3.1 | llama3.1:8b | 8B params, complex reasoning/planning |
+| Tool / Deep Model | Qwen 2.5 | qwen2.5:14b | 14B params, tool calling + deep/long-context tasks |
 | Agent API | FastAPI | 0.115.0 | Central /chat endpoint |
 | ASGI Server | Uvicorn | 0.32.0 | Serves FastAPI |
 | Ollama Client | ollama-python | 0.3.3 | Python client for Ollama API |
@@ -1110,12 +1128,14 @@ All secrets are stored in `.env` in the project root. **Never commit this file.*
 | `DEEP_NUM_CTX` | agent-core | Context window size for deep model (default `16384`) |
 | `NUM_CTX` | agent-core | Context window size for standard models (default `8192`) |
 | `HISTORY_TOKEN_BUDGET` | agent-core | Max tokens for conversation history truncation (default `6000`) |
+| `TOOL_MODEL` | agent-core | Model used for tool calling when skills are registered (default `qwen2.5:14b`). Overrides auto-routing for all `model=null` requests. Must support Ollama's function-calling format. |
+| `MAX_TOOL_ITERATIONS` | agent-core | Hard cap on tool-call rounds per request before forcing a final answer (default `5`) |
+| `TAVILY_API_KEY` | secret broker → web_search skill | API key for Tavily web search. Get a free key at tavily.com. Set in `.env`; injected into agent-core via docker-compose. Never passed to the LLM. |
 
 **Future variables (as features are added):**
 
 | Variable | Used By | Description |
 |---|---|---|
-| `TAVILY_API_KEY` | secret broker → web_search skill | API key for Tavily web search |
 | `HEARTBEAT_INTERVAL` | agent-core | Seconds between heartbeat ticks (default 60) |
 
 ---
