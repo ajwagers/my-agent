@@ -5,6 +5,7 @@ Runnable without Docker: python -m pytest tests/test_policy.py -v
 
 import os
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -308,6 +309,49 @@ external_access:
     def test_missing_config_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             PolicyEngine(config_path=str(tmp_path / "nonexistent.yaml"))
+
+
+# ============================================================
+# PolicyResult dataclass tests
+# ============================================================
+
+# ============================================================
+# Redis-backed rate limiting tests
+# ============================================================
+
+class TestRateLimitingWithRedis:
+    """Rate limiting via Redis ZSET (sorted set) sliding window."""
+
+    def test_within_limit_allowed(self, redis_policy_engine):
+        for _ in range(3):
+            assert redis_policy_engine.check_rate_limit("test_skill") is True
+
+    def test_exceeding_limit_blocked(self, redis_policy_engine):
+        for _ in range(3):
+            redis_policy_engine.check_rate_limit("test_skill")
+        assert redis_policy_engine.check_rate_limit("test_skill") is False
+
+    def test_window_slides_removes_old_entries(self, redis_policy_engine, fake_redis):
+        """Pre-populate ZSET with old entries; they should be expired and new call allowed."""
+        old_time = time.time() - 120  # 2 minutes ago, outside 60s window
+        fake_redis._zsets["ratelimit:test_skill"] = {
+            "old-uuid-1": old_time,
+            "old-uuid-2": old_time,
+            "old-uuid-3": old_time,
+        }
+        # All 3 are stale; the next call should remove them and succeed
+        assert redis_policy_engine.check_rate_limit("test_skill") is True
+
+    def test_fallback_to_memory_on_redis_error(self, policy_engine):
+        """When the Redis pipeline raises, should fall back to in-memory counter."""
+        class BrokenRedis:
+            def pipeline(self):
+                raise Exception("Redis is down")
+
+        policy_engine.redis_client = BrokenRedis()
+        for _ in range(3):
+            assert policy_engine.check_rate_limit("test_skill") is True
+        assert policy_engine.check_rate_limit("test_skill") is False
 
 
 # ============================================================

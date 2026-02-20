@@ -45,6 +45,15 @@ rate_limits:
   file_write:
     max_calls: 15
     window_seconds: 60
+  file_read:
+    max_calls: 20
+    window_seconds: 60
+  url_fetch:
+    max_calls: 10
+    window_seconds: 60
+  pdf_parse:
+    max_calls: 10
+    window_seconds: 60
 
 max_tool_iterations: 5  # operator-tunable hard cap on tool-calling rounds per request
 

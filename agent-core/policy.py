@@ -15,6 +15,7 @@ import enum
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple
@@ -290,30 +291,56 @@ class PolicyEngine:
             risk_level=risk,
         )
 
-    # ---- Rate limiting (in-memory sliding window) -------------------------
+    # ---- Rate limiting ----------------------------------------------------
 
     def check_rate_limit(self, skill_name: str) -> bool:
-        """Returns True if the call is within limits, False if rate-limited."""
+        """Returns True if the call is within limits, False if rate-limited.
+
+        Uses Redis ZSET (sorted set) when a redis_client is available so that
+        rate-limit windows survive container restarts. Falls back to an
+        in-memory sliding window when Redis is not configured.
+        """
         limits_cfg = self.config.get("rate_limits", {})
         skill_cfg = limits_cfg.get(skill_name, limits_cfg.get("default", {}))
         max_calls = skill_cfg.get("max_calls", 30)
         window = skill_cfg.get("window_seconds", 60)
 
+        if self.redis_client is not None:
+            return self._check_rate_limit_redis(skill_name, max_calls, window)
+        return self._check_rate_limit_memory(skill_name, max_calls, window)
+
+    def _check_rate_limit_redis(self, skill_name: str, max_calls: int, window: int) -> bool:
+        """Redis-backed sliding window using a sorted set (score = timestamp)."""
         now = time.time()
-        key = skill_name
+        key = f"ratelimit:{skill_name}"
+        call_id = str(uuid.uuid4())
+        try:
+            pipe = self.redis_client.pipeline()
+            pipe.zremrangebyscore(key, 0, now - window)  # remove expired entries
+            pipe.zadd(key, {call_id: now})               # record this call
+            pipe.zcard(key)                              # count (includes our call)
+            pipe.expire(key, window + 1)                 # auto-clean TTL
+            results = pipe.execute()
+            count = results[2]  # zcard result
+            if count > max_calls:
+                self.redis_client.zrem(key, call_id)     # undo our call
+                return False
+            return True
+        except Exception:
+            # Redis unavailable — fall back to in-memory for this call
+            return self._check_rate_limit_memory(skill_name, max_calls, window)
 
-        if key not in self._rate_counters:
-            self._rate_counters[key] = []
-
-        # Slide the window: remove timestamps older than window
-        self._rate_counters[key] = [
-            t for t in self._rate_counters[key] if now - t < window
+    def _check_rate_limit_memory(self, skill_name: str, max_calls: int, window: int) -> bool:
+        """In-memory sliding window fallback."""
+        now = time.time()
+        if skill_name not in self._rate_counters:
+            self._rate_counters[skill_name] = []
+        self._rate_counters[skill_name] = [
+            t for t in self._rate_counters[skill_name] if now - t < window
         ]
-
-        if len(self._rate_counters[key]) >= max_calls:
+        if len(self._rate_counters[skill_name]) >= max_calls:
             return False
-
-        self._rate_counters[key].append(now)
+        self._rate_counters[skill_name].append(now)
         return True
 
     # ---- Helpers ----------------------------------------------------------

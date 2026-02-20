@@ -18,6 +18,10 @@ from skills.registry import SkillRegistry
 from skills.rag_ingest import RagIngestSkill
 from skills.rag_search import RagSearchSkill
 from skills.web_search import WebSearchSkill
+from skills.file_read import FileReadSkill
+from skills.file_write import FileWriteSkill
+from skills.url_fetch import UrlFetchSkill
+from skills.pdf_parse import PdfParseSkill
 from skill_runner import run_tool_loop
 
 app = FastAPI()
@@ -54,6 +58,10 @@ skill_registry = SkillRegistry()
 skill_registry.register(RagIngestSkill())
 skill_registry.register(RagSearchSkill())
 skill_registry.register(WebSearchSkill())
+skill_registry.register(FileReadSkill())
+skill_registry.register(FileWriteSkill())
+skill_registry.register(UrlFetchSkill())
+skill_registry.register(PdfParseSkill())
 
 # Config
 HISTORY_TOKEN_BUDGET = int(os.getenv("HISTORY_TOKEN_BUDGET", "6000"))
@@ -156,7 +164,11 @@ Do not mix in facts from your training data. Do not invent details not present \
 in the results.
 - If the first search does not answer the question fully, search again with a \
 more specific query rather than guessing.
-- Use **rag_search** for questions about documents the user has uploaded."""
+- Use **rag_search** for questions about documents the user has uploaded.
+- Use **file_read** to read files from /sandbox, /agent, or /app.
+- Use **file_write** to write or append files to /sandbox.
+- Use **url_fetch** to retrieve content from a specific URL.
+- Use **pdf_parse** to extract text from PDF files stored in /sandbox."""
     in_bootstrap = identity_module.is_bootstrap_mode()
 
     # Bootstrap is CLI-only — lock out Telegram, web-ui, and any remote caller.

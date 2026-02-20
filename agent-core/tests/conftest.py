@@ -16,12 +16,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 class FakeRedis:
-    """In-memory mock of redis-py, supporting hash ops, list ops, and pub/sub."""
+    """In-memory mock of redis-py, supporting hash ops, list ops, sorted-set ops, and pub/sub."""
 
     def __init__(self):
         self._data: Dict[str, Any] = {}
         self._hashes: Dict[str, Dict[str, str]] = {}
         self._lists: Dict[str, List[str]] = {}
+        self._zsets: Dict[str, Dict[str, float]] = {}
         self._subscribers: Dict[str, List] = {}
         self._lock = threading.Lock()
 
@@ -37,6 +38,7 @@ class FakeRedis:
             self._data.pop(k, None)
             self._hashes.pop(k, None)
             self._lists.pop(k, None)
+            self._zsets.pop(k, None)
 
     # -- Hash ops --
     def hset(self, name: str, mapping: Optional[Dict] = None, **kwargs) -> None:
@@ -97,6 +99,39 @@ class FakeRedis:
     def expire(self, name: str, seconds: int) -> None:
         pass  # no-op for tests
 
+    # -- Sorted-set ops --
+    def zadd(self, name: str, mapping: Dict[str, float]) -> int:
+        if name not in self._zsets:
+            self._zsets[name] = {}
+        added = 0
+        for member, score in mapping.items():
+            if member not in self._zsets[name]:
+                added += 1
+            self._zsets[name][member] = score
+        return added
+
+    def zcard(self, name: str) -> int:
+        return len(self._zsets.get(name, {}))
+
+    def zrem(self, name: str, *members: str) -> int:
+        zset = self._zsets.get(name, {})
+        removed = 0
+        for m in members:
+            if m in zset:
+                del zset[m]
+                removed += 1
+        return removed
+
+    def zremrangebyscore(self, name: str, min_score: float, max_score: float) -> int:
+        zset = self._zsets.get(name, {})
+        to_remove = [m for m, score in zset.items() if min_score <= score <= max_score]
+        for m in to_remove:
+            del zset[m]
+        return len(to_remove)
+
+    def pipeline(self) -> "FakePipeline":
+        return FakePipeline(self)
+
 
 class FakePubSub:
     def __init__(self, fake_redis: FakeRedis):
@@ -123,6 +158,38 @@ class FakePubSub:
                 subs = self._redis._subscribers.get(ch, [])
                 if self._queue in subs:
                     subs.remove(self._queue)
+
+
+class FakePipeline:
+    """Queues FakeRedis operations and replays them on execute(), returning a results list."""
+
+    def __init__(self, fake_redis: FakeRedis):
+        self._redis = fake_redis
+        self._ops: List = []
+
+    def zremrangebyscore(self, name: str, min_score: float, max_score: float) -> "FakePipeline":
+        self._ops.append(("zremrangebyscore", (name, min_score, max_score)))
+        return self
+
+    def zadd(self, name: str, mapping: Dict[str, float]) -> "FakePipeline":
+        self._ops.append(("zadd", (name, mapping)))
+        return self
+
+    def zcard(self, name: str) -> "FakePipeline":
+        self._ops.append(("zcard", (name,)))
+        return self
+
+    def expire(self, name: str, seconds: int) -> "FakePipeline":
+        self._ops.append(("expire", (name, seconds)))
+        return self
+
+    def execute(self) -> List:
+        results = []
+        for method, args in self._ops:
+            fn = getattr(self._redis, method)
+            results.append(fn(*args))
+        self._ops.clear()
+        return results
 
 
 @pytest.fixture
@@ -190,3 +257,54 @@ def approval_manager(fake_redis):
     """ApprovalManager with FakeRedis and short timeout."""
     from approval import ApprovalManager
     return ApprovalManager(redis_client=fake_redis, default_timeout=2)
+
+
+@pytest.fixture
+def redis_policy_engine(tmp_path, fake_redis):
+    """PolicyEngine backed by FakeRedis — exercises the Redis rate-limit path."""
+    from policy import PolicyEngine
+
+    config = tmp_path / "policy.yaml"
+    config.write_text(f"""
+zones:
+  sandbox:
+    path: {tmp_path / 'sandbox'}
+    read: allow
+    write: allow
+    execute: allow
+  identity:
+    path: {tmp_path / 'identity'}
+    read: allow
+    write: requires_approval
+    execute: deny
+  system:
+    path: {tmp_path / 'system'}
+    read: allow
+    write: deny
+    execute: deny
+
+rate_limits:
+  default:
+    max_calls: 30
+    window_seconds: 60
+  test_skill:
+    max_calls: 3
+    window_seconds: 60
+
+approval:
+  timeout_seconds: 300
+  redis_prefix: approval
+  pubsub_channel: "approvals:pending"
+
+external_access:
+  http_get: allow
+  http_post: requires_approval
+  http_put: requires_approval
+  http_delete: requires_approval
+  denied_url_patterns: []
+""")
+    (tmp_path / "sandbox").mkdir(exist_ok=True)
+    (tmp_path / "identity").mkdir(exist_ok=True)
+    (tmp_path / "system").mkdir(exist_ok=True)
+
+    return PolicyEngine(config_path=str(config), redis_client=fake_redis)

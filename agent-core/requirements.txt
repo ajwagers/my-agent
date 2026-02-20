@@ -6,3 +6,5 @@ requests==2.32.3
 chromadb        # For RAG tool
 redis
 pyyaml
+pypdf
+beautifulsoup4
