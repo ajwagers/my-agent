@@ -2,7 +2,7 @@
 
 > **Last Updated:** 2026-02-20
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). Next up: Phase 4B (additional skills).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Next up: Phase 4B (remaining skills: url_fetch, file_read, file_write, pdf_parse).
 
 ---
 
@@ -198,7 +198,7 @@ User input (Telegram / Web UI / CLI)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, and skill framework with web_search + rag_search)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, and skill framework with web_search + rag_search + rag_ingest)**
 
 The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, CLI-only gate on bootstrap mode, and a modular skill framework supporting Ollama tool calling.
 
@@ -213,7 +213,8 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `skills/__init__.py` | Empty package marker |
 | `skills/base.py` | `SkillMetadata` dataclass + abstract `SkillBase` class with `validate()`, `execute()`, `sanitize_output()`, `to_ollama_tool()` concrete method |
 | `skills/registry.py` | `SkillRegistry` — register, get, all_skills, to_ollama_tools, `__len__`. Raises `ValueError` on duplicate name. |
-| `skills/rag_search.py` | `RagSearchSkill` — ChromaDB vector search. LOW risk, no approval, rate-limited. Replaces old hardcoded "search docs" keyword hack. |
+| `skills/rag_ingest.py` | `RagIngestSkill` — adds text to ChromaDB using `DefaultEmbeddingFunction`. Chunks at 800 chars (100 overlap). LOW risk, no approval, rate-limited (10/min). |
+| `skills/rag_search.py` | `RagSearchSkill` — ChromaDB vector search using `DefaultEmbeddingFunction`. LOW risk, no approval, rate-limited. Replaces old hardcoded "search docs" keyword hack. |
 | `skills/web_search.py` | `WebSearchSkill` — Tavily REST API web search. LOW risk, no approval, rate-limited (3/turn). Strips HTML, `javascript:`, `data:`, and prompt injection phrases from results. API key via secret broker. |
 | `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval, enhanced sanitization, query helper for dashboard. `log_skill_call()` captures `skill_name`, `status`, `duration_ms`. |
 | `policy.yaml` | Zone rules, rate limits (including `rag_search` and `web_search`), approval settings, denied URL patterns (mounted read-only) |
@@ -226,7 +227,7 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `agent` | Shell wrapper (`#!/bin/bash`) so `agent chat "msg"` works on PATH |
 | `Dockerfile` | Python 3.12, installs deps, copies CLI to `/usr/local/bin/agent` |
 | `requirements.txt` | fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml |
-| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills), runnable without Docker — **229 tests total** |
+| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills), runnable without Docker — **244 tests total** |
 
 **API Endpoints:**
 
@@ -404,7 +405,8 @@ my-agent/
 │   │   ├── __init__.py         # Package marker
 │   │   ├── base.py             # SkillMetadata dataclass + abstract SkillBase class
 │   │   ├── registry.py         # SkillRegistry: register, get, to_ollama_tools, __len__
-│   │   ├── rag_search.py       # RagSearchSkill — ChromaDB vector search (replaces keyword hack)
+│   │   ├── rag_ingest.py       # RagIngestSkill — add text to ChromaDB (DefaultEmbeddingFunction, chunked)
+│   │   ├── rag_search.py       # RagSearchSkill — ChromaDB vector search (DefaultEmbeddingFunction)
 │   │   └── web_search.py       # WebSearchSkill — Tavily API, output sanitization, prompt injection guards
 │   ├── tracing.py              # Structured JSON tracing: context vars, event emitters, Redis log storage
 │   ├── policy.yaml             # Zone rules, rate limits (rag_search, web_search), approval config (read-only mount)
@@ -423,7 +425,7 @@ my-agent/
 │       ├── test_identity.py    # Identity loader tests: bootstrap detection, file loading, prompt building
 │       ├── test_bootstrap.py   # Bootstrap parser tests: proposal extraction, validation, completion, approval integration
 │       ├── test_tracing.py     # 55 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization
-│       └── test_skills.py      # ~65 tests: SkillBase, SkillRegistry, execute_skill pipeline, RagSearchSkill, WebSearchSkill, SecretBroker, run_tool_loop (no-tools, with-tools, per-turn limits, auto-retry on refusal)
+│       └── test_skills.py      # 80 tests: SkillBase, SkillRegistry, execute_skill pipeline, RagIngestSkill, RagSearchSkill, WebSearchSkill, SecretBroker, run_tool_loop (no-tools, with-tools, per-turn limits, auto-retry on refusal)
 │
 │
 ├── agent-identity/             # Bind-mounted to /agent in container (Zone 2)
@@ -489,6 +491,7 @@ my-agent/
 | 16 | Rate limiting is in-memory only | **Low** | `agent-core/policy.py` | The sliding window rate limiter resets on container restart. Skills are now built and rate-limited, but the window resets on restart. Deferred to Phase 4B. | DEFERRED → 4B |
 | 17 | Web UI bypasses agent-core | **Medium** | `web-ui/app.py` | Web UI talks directly to Ollama via LangChain instead of routing through agent-core. Policy engine, rate limiting, tracing, and skills (web_search, rag_search) do not apply to web UI conversations. Deferred — will be addressed in a future phase. | DEFERRED |
 | 18 | Tool-calling model hallucination | **Medium** | `agent-core/skill_runner.py` | qwen2.5:14b sometimes calls web_search correctly but then ignores the results and invents an answer from training data (especially for sports/news). Mitigated with "base your answer ONLY on search results" instructions and auto-retry on refusal, but not fully solved at the model level. | OPEN — model limitation |
+| 19 | ~~RAG embedding mismatch~~ | **High** | `web-ui/app.py`, `skills/rag_search.py` | Web UI ingested via LangChain+OllamaEmbeddings; `rag_search` queried via ChromaDB's DefaultEmbeddingFunction — incompatible vector spaces causing silent search failures. Fixed: all paths now use `DefaultEmbeddingFunction` consistently. `rag_ingest` skill added so agent can populate its own knowledge base. | FIXED |
 
 ---
 
@@ -848,8 +851,14 @@ A dedicated Streamlit dashboard (separate service on port 8502) showing the oper
   - `run_tool_loop()`: Ollama tool-calling loop with per-skill call limits, auto-retry when model refuses to use tools (detects phrases like "don't have real-time access", injects nudge message, retries once). Returns `(final_text, updated_messages, stats)`.
 - `agent-core/app.py` — Wired skills: registry + tool loop. Current date/time prepended to top of system prompt. Tool usage rules block appended when skills registered. TOOL_MODEL used for all auto-routed requests. History saved clean (tool turns not persisted to Redis).
 - `agent-core/policy.yaml` — Added `rag_search` rate limit (20/min).
+
+**Post-4A patch (pre-4B): RAG embedding fix + rag_ingest skill**
+- Fixed embedding mismatch: `rag_search` and the new `rag_ingest` skill both explicitly use `DefaultEmbeddingFunction` (`all-MiniLM-L6-v2` via sentence-transformers), ensuring vectors from ingestion and search are compatible. Web UI ingestion was previously using LangChain+OllamaEmbeddings — an incompatible vector space.
+- `agent-core/skills/rag_ingest.py` — `RagIngestSkill`: splits text into 800-char chunks (100 overlap), stores in ChromaDB `rag_data` collection using `DefaultEmbeddingFunction`. LOW risk, no approval, rate-limited (10/min, 5 calls/turn). Agent can now add documents to its own knowledge base during a conversation.
+- `web-ui/app.py` — Replaced LangChain+OllamaEmbeddings with ChromaDB native API + `DefaultEmbeddingFunction` in both `add_to_rag_database()` and `get_relevant_context()`. Removed `langchain-chroma` dependency.
+- 15 new tests added for `RagIngestSkill`. Total: 244 tests.
 - `docker-compose.yml` — Added `TOOL_MODEL=qwen2.5:14b`, `MAX_TOOL_ITERATIONS=5`, `TAVILY_API_KEY`.
-- `agent-core/tests/test_skills.py` — ~65 tests: SkillBase/Registry, execute_skill pipeline (rate limit, validation, approval, errors, tracing), RagSearchSkill, WebSearchSkill, SecretBroker, run_tool_loop (no-tools, with-tools, per-turn limits, max iterations, auto-retry on refusal).
+- `agent-core/tests/test_skills.py` — 80 tests: SkillBase/Registry, execute_skill pipeline (rate limit, validation, approval, errors, tracing), RagIngestSkill, RagSearchSkill, WebSearchSkill, SecretBroker, run_tool_loop (no-tools, with-tools, per-turn limits, max iterations, auto-retry on refusal).
 
 **Key decisions made:**
 - `TOOL_MODEL=qwen2.5:14b` — better tool calling than llama3.2:latest or phi3. qwen2.5:14b serves as both TOOL_MODEL and DEEP_MODEL.
@@ -864,32 +873,29 @@ A dedicated Streamlit dashboard (separate service on port 8502) showing the oper
 
 **Priority: HIGH — The first real capabilities.**
 
-Six skills that give the agent the ability to search the web, fetch URLs, read/write files, parse PDFs, and query the vector database. All read-heavy, low blast radius.
+Skills that give the agent the ability to fetch URLs, read/write files, parse PDFs, and add documents to its knowledge base. `web_search`, `rag_search`, and `rag_ingest` are already complete (shipped pre-4B).
 
-| Skill | Description | Risk Level | Approval | Key Security |
-|---|---|---|---|---|
-| `web_search` | Search the web via Tavily API (or similar) | Low | No | API key via secret broker, result sanitization, rate limited (10/min) |
-| `url_fetch` | Fetch and extract content from a specific URL | Low | No | SSRF prevention (block internal IPs/Docker network), denied URL patterns from policy.yaml, response size limit, content sanitization |
-| `file_read` | Read file contents | Low (sandbox), Medium (identity) | No (sandbox), No (identity read) | Path validation via `resolve_zone()`, no symlink escape, Zone 3+ denied |
-| `file_write` | Write/create files | Low (sandbox), High (identity) | No (sandbox), Yes (identity) | Path validation, zone enforcement, identity writes require owner approval |
-| `pdf_parse` | Extract text from PDF files | Low | No | Parse in sandbox only, size limits, output sanitization |
-| `rag_search` | Query ChromaDB vector database for relevant documents | Low | No | Replaces hardcoded "search docs" keyword check, result truncation |
+| Skill | Description | Risk Level | Approval | Key Security | Status |
+|---|---|---|---|---|---|
+| `web_search` | Search the web via Tavily API | Low | No | API key via secret broker, result sanitization, rate limited | ✅ Done (4A) |
+| `rag_search` | Query ChromaDB vector database | Low | No | `DefaultEmbeddingFunction`, result truncation, rate limited | ✅ Done (4A + patch) |
+| `rag_ingest` | Add text to ChromaDB knowledge base | Low | No | `DefaultEmbeddingFunction`, chunked (800/100), rate limited (10/min) | ✅ Done (pre-4B patch) |
+| `url_fetch` | Fetch and extract content from a URL | Low | No | SSRF prevention (block internal IPs/Docker network), denied URL patterns, response size limit, content sanitization | ⬜ |
+| `file_read` | Read file contents | Low (sandbox), Medium (identity) | No | Path validation via `resolve_zone()`, no symlink escape, Zone 3+ denied | ⬜ |
+| `file_write` | Write/create files | Low (sandbox), High (identity) | No (sandbox), Yes (identity) | Path validation, zone enforcement, identity writes require owner approval | ⬜ |
+| `pdf_parse` | Extract text from PDF files | Low | No | Parse in sandbox only, size limits, output sanitization | ⬜ |
 
 **Per-skill security details:**
-- **web_search**: Results are sanitized before entering LLM context — strip HTML, remove hidden text, truncate to max chars. Treats all web content as potentially adversarial (hidden prompt injection in page content).
 - **url_fetch**: Validates URL against denied patterns (paypal, stripe, billing, signup, register from policy.yaml). Blocks internal network addresses (10.x, 172.16-31.x, 192.168.x, localhost, Docker service names). Response body truncated and sanitized.
 - **file_read/file_write**: `validate()` resolves the real path via `os.path.realpath()` and checks against zone rules. `../` traversal and symlink escape are caught. Identity file writes go through the approval gate.
 - **pdf_parse**: Only operates on files in `/sandbox`. Uses a pure-Python PDF library (no shell calls). Output truncated to prevent context bloat.
-- **rag_search**: Queries the existing ChromaDB instance. Results are truncated and returned as structured context.
 
 **Test criteria:**
-- Web search returns results for a query, API key is not in the LLM context
 - URL fetch blocks internal network addresses (SSRF) and denied URL patterns
 - File write to `/sandbox/test.txt` succeeds without approval
 - File write to `/agent/SOUL.md` triggers approval gate
 - File write to `/app/anything` is denied outright
 - PDF parse extracts text from a test PDF in `/sandbox`
-- RAG search returns relevant documents and replaces the keyword-based routing
 
 ---
 
