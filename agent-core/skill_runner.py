@@ -11,8 +11,31 @@ LLM can see what went wrong and decide how to proceed.
 """
 
 import json
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+# Phrases that indicate the model refused to use tools due to perceived lack
+# of real-time access. Detected to trigger a one-shot retry nudge.
+_REFUSAL_PATTERN = re.compile(
+    r"don.t have real.time"
+    r"|real.time capabilities"
+    r"|real.time access"
+    r"|training data"
+    r"|knowledge cutoff"
+    r"|can.t access the internet"
+    r"|cannot access the internet"
+    r"|no internet access"
+    r"|not able to browse"
+    r"|cannot browse"
+    r"|don.t have access to current",
+    re.IGNORECASE,
+)
+
+_RETRY_NUDGE = (
+    "You have a web_search tool available. "
+    "Please use it now to find a current answer rather than relying on training data."
+)
 
 import tracing
 from approval import ApprovalManager
@@ -197,6 +220,17 @@ async def run_tool_loop(
         # No tool calls — model produced its final text answer
         if not tool_calls:
             text = msg.get("content", "")
+
+            # Auto-retry: if the model refused to use tools on its first attempt
+            # due to perceived lack of real-time access, nudge it once.
+            if iteration == 0 and not skills_called and _REFUSAL_PATTERN.search(text):
+                messages = messages + [
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": _RETRY_NUDGE},
+                ]
+                iteration += 1
+                continue
+
             messages = messages + [{"role": "assistant", "content": text}]
             return text, messages, {"iterations": iteration, "skills_called": skills_called}
 

@@ -40,9 +40,11 @@ class WebSearchSkill(SkillBase):
         return SkillMetadata(
             name="web_search",
             description=(
-                "Search the web for current information using a search query. "
-                "Use this when you need up-to-date information or facts not "
-                "available in the local knowledge base."
+                "Search the web for real-time information. "
+                "Call this tool when asked about: current events, breaking news, "
+                "sports scores or results, stock prices, weather, recently released "
+                "software or products, or any fact that may have changed since 2024. "
+                "Do not answer from training data for these topics — search instead."
             ),
             risk_level=RiskLevel.LOW,
             rate_limit="web_search",

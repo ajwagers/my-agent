@@ -1016,3 +1016,129 @@ class TestRunToolLoopWithTools:
         roles = [m.get("role") for m in updated]
         assert "tool" in roles          # tool turns present in updated_messages
         assert "assistant" in roles     # final assistant message present
+
+
+# ---------------------------------------------------------------------------
+# TestAutoRetryOnRefusal
+# ---------------------------------------------------------------------------
+
+class TestAutoRetryOnRefusal:
+    """Tests for the auto-retry nudge when the model refuses to use tools."""
+
+    def _make_policy(self):
+        pe = MagicMock()
+        pe.check_rate_limit.return_value = True
+        return pe
+
+    @pytest.mark.asyncio
+    async def test_refusal_triggers_retry_and_tool_called(self):
+        """Model refuses first, retry nudge causes it to call the tool."""
+        from skill_runner import run_tool_loop
+
+        reg = SkillRegistry()
+        reg.register(_GoodSkill())
+        client = FakeOllamaClient([
+            _text_response("I don't have real-time access to that information."),
+            _tool_call_response("good_skill", {"text": "searched"}),
+            _text_response("Here is what I found."),
+        ])
+        text, msgs, stats = await run_tool_loop(
+            ollama_client=client,
+            messages=[{"role": "user", "content": "who won?"}],
+            tools=reg.to_ollama_tools(),
+            model="test-model",
+            ctx=4096,
+            skill_registry=reg,
+            policy_engine=self._make_policy(),
+            approval_manager=MagicMock(),
+            auto_approve=True,
+            user_id="u1",
+            max_iterations=5,
+        )
+        assert text == "Here is what I found."
+        assert "good_skill" in stats["skills_called"]
+        # Nudge message should appear in the message history
+        user_msgs = [m for m in msgs if m.get("role") == "user"]
+        assert any("web_search tool" in m["content"] for m in user_msgs)
+
+    @pytest.mark.asyncio
+    async def test_refusal_only_retries_once(self):
+        """If model refuses again after nudge, return that second response without looping."""
+        from skill_runner import run_tool_loop
+
+        reg = SkillRegistry()
+        reg.register(_GoodSkill())
+        client = FakeOllamaClient([
+            _text_response("I don't have real-time access."),   # triggers retry
+            _text_response("I still don't have real-time access."),  # after nudge, still refuses
+        ])
+        text, _, stats = await run_tool_loop(
+            ollama_client=client,
+            messages=[{"role": "user", "content": "who won?"}],
+            tools=reg.to_ollama_tools(),
+            model="test-model",
+            ctx=4096,
+            skill_registry=reg,
+            policy_engine=self._make_policy(),
+            approval_manager=MagicMock(),
+            auto_approve=True,
+            user_id="u1",
+            max_iterations=5,
+        )
+        # Returns the second response, no infinite loop
+        assert "still" in text
+        assert stats["skills_called"] == []
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_tools_is_none(self):
+        """Refusal pattern in plain-chat mode (no tools) does not trigger retry."""
+        from skill_runner import run_tool_loop
+
+        reg = SkillRegistry()
+        client = FakeOllamaClient([
+            _text_response("I don't have real-time access to that."),
+        ])
+        text, _, stats = await run_tool_loop(
+            ollama_client=client,
+            messages=[{"role": "user", "content": "who won?"}],
+            tools=None,
+            model="test-model",
+            ctx=4096,
+            skill_registry=reg,
+            policy_engine=self._make_policy(),
+            approval_manager=MagicMock(),
+            auto_approve=True,
+            user_id="u1",
+            max_iterations=5,
+        )
+        assert "real-time" in text
+        assert stats["iterations"] == 0
+
+    @pytest.mark.asyncio
+    async def test_no_retry_after_skills_already_called(self):
+        """If skills were already called in this turn, do not retry on a non-tool reply."""
+        from skill_runner import run_tool_loop
+
+        reg = SkillRegistry()
+        reg.register(_GoodSkill())
+        client = FakeOllamaClient([
+            _tool_call_response("good_skill", {"text": "q"}),
+            # After the tool result, model says a refusal-sounding thing — should NOT retry
+            _text_response("Based on training data, I don't have real-time access."),
+        ])
+        text, _, stats = await run_tool_loop(
+            ollama_client=client,
+            messages=[{"role": "user", "content": "go"}],
+            tools=reg.to_ollama_tools(),
+            model="test-model",
+            ctx=4096,
+            skill_registry=reg,
+            policy_engine=self._make_policy(),
+            approval_manager=MagicMock(),
+            auto_approve=True,
+            user_id="u1",
+            max_iterations=5,
+        )
+        # Should return without a second retry nudge
+        assert stats["skills_called"] == ["good_skill"]
+        assert "real-time" in text

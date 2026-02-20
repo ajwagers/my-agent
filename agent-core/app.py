@@ -6,6 +6,7 @@ import asyncio
 import os
 import json
 import redis
+from datetime import datetime, timezone
 
 from policy import PolicyEngine
 from approval import ApprovalManager
@@ -128,7 +129,32 @@ async def chat(request: ChatRequest):
 
     # Load identity and build system prompt
     loaded_identity = identity_module.load_identity()
-    system_prompt = identity_module.build_system_prompt(loaded_identity)
+    now = datetime.now(timezone.utc)
+    # Prepend date so it appears before any identity content — models attend
+    # more reliably to information at the start of the system prompt.
+    date_line = f"Current date and time (UTC): {now.strftime('%A, %B %d, %Y %H:%M UTC')}"
+    system_prompt = date_line + "\n\n" + identity_module.build_system_prompt(loaded_identity)
+
+    if len(skill_registry) > 0:
+        system_prompt += """
+
+## Tool Usage
+You have real-time tools available. Follow these rules strictly:
+
+- You know the current date and time — it is given at the top of your context. \
+Answer date/time questions directly and naturally. Never mention the system \
+prompt, never say you lack real-time access to the date or time.
+- Use **web_search** proactively for anything time-sensitive: current events, \
+news, sports results, prices, weather, or any fact that may have changed since \
+your training. Do not claim you lack real-time access — search instead.
+- Include the current year in search queries when relevant (e.g. \
+"Super Bowl 2026 winner" not "this year's Super Bowl winner").
+- When search results are returned, base your answer ONLY on those results. \
+Do not mix in facts from your training data. Do not invent details not present \
+in the results.
+- If the first search does not answer the question fully, search again with a \
+more specific query rather than guessing.
+- Use **rag_search** for questions about documents the user has uploaded."""
     in_bootstrap = identity_module.is_bootstrap_mode()
 
     # Bootstrap is CLI-only — lock out Telegram, web-ui, and any remote caller.
