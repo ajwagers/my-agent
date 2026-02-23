@@ -1,8 +1,8 @@
 # My-Agent: Product Requirements Document
 
-> **Last Updated:** 2026-02-20
+> **Last Updated:** 2026-02-23
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Next up: Phase 4B (remaining skills: url_fetch, file_read, file_write, pdf_parse).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Next up: Phase 4D (math, physics, media skills).
 
 ---
 
@@ -198,9 +198,9 @@ User input (Telegram / Web UI / CLI)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, and skill framework with web_search + rag_search + rag_ingest)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, skill framework with 9 skills: web_search + rag_search + rag_ingest + url_fetch + file_read + file_write + pdf_parse + remember + recall, Redis-backed rate limiting, three-layer persistent memory, and background heartbeat loop)**
 
-The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, CLI-only gate on bootstrap mode, and a modular skill framework supporting Ollama tool calling.
+The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, CLI-only gate on bootstrap mode, a modular skill framework supporting Ollama tool calling, and a background heartbeat loop for autonomous monitoring.
 
 **Files:**
 
@@ -216,8 +216,17 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `skills/rag_ingest.py` | `RagIngestSkill` — adds text to ChromaDB using `DefaultEmbeddingFunction`. Chunks at 800 chars (100 overlap). LOW risk, no approval, rate-limited (10/min). |
 | `skills/rag_search.py` | `RagSearchSkill` — ChromaDB vector search using `DefaultEmbeddingFunction`. LOW risk, no approval, rate-limited. Replaces old hardcoded "search docs" keyword hack. |
 | `skills/web_search.py` | `WebSearchSkill` — Tavily REST API web search. LOW risk, no approval, rate-limited (3/turn). Strips HTML, `javascript:`, `data:`, and prompt injection phrases from results. API key via secret broker. |
-| `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval, enhanced sanitization, query helper for dashboard. `log_skill_call()` captures `skill_name`, `status`, `duration_ms`. |
-| `policy.yaml` | Zone rules, rate limits (including `rag_search` and `web_search`), approval settings, denied URL patterns (mounted read-only) |
+| `skills/url_fetch.py` | `UrlFetchSkill` — fetch URL, extract text via BeautifulSoup. SSRF prevention (blocks private IPs, Docker hostnames). Response size limit + content sanitization. LOW risk, no approval, rate-limited. |
+| `skills/file_read.py` | `FileReadSkill` — read file contents with zone enforcement via `os.path.realpath()`. No symlink escape. Blocks Zone 3+. LOW risk, no approval, rate-limited. |
+| `skills/file_write.py` | `FileWriteSkill` — write files with zone enforcement. Zone 1 (sandbox): auto-allowed. Zone 2 (identity): requires owner approval. Zone 3+: denied. Rate-limited. |
+| `skills/pdf_parse.py` | `PdfParseSkill` — extract text from PDFs in `/sandbox` using `pypdf`. Output truncated to 4000 chars. LOW risk, no approval, rate-limited. |
+| `skills/remember.py` | `RememberSkill` — store facts/observations to ChromaDB `agent_memory` collection. Sanitizes content before storage (injection detection). LOW risk, no approval, rate-limited (15/min). |
+| `skills/recall.py` | `RecallSkill` — semantic search over `agent_memory` collection. Returns results with type + age labels. LOW risk, no approval, rate-limited (20/min). |
+| `memory.py` | `MemoryStore` — ChromaDB wrapper for `agent_memory` collection. Methods: `add()`, `search()`, `get_recent()`. Separate from `rag_data`; metadata schema: `{user_id, type, source, timestamp}`. |
+| `memory_sanitizer.py` | `sanitize(content)` — strips null bytes, control chars, HTML tags; detects 8 prompt-injection patterns (ordered: injection check BEFORE HTML strip). Raises `MemoryPoisonError(ValueError)` on detection. |
+| `heartbeat.py` | Background asyncio loop started via `@app.on_event("startup")`. Ticks every `HEARTBEAT_INTERVAL` seconds (default 60). Logs each tick via `tracing._emit`. Catches all exceptions to stay alive. |
+| `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval/heartbeat, enhanced sanitization, query helper for dashboard. `log_skill_call()` captures `skill_name`, `status`, `duration_ms`. |
+| `policy.yaml` | Zone rules, Redis-backed rate limits (including `rag_search`, `web_search`, `url_fetch`, `file_read`, `file_write`, `pdf_parse`, `remember`, `recall`), approval settings, denied URL patterns (mounted read-only) |
 | `policy.py` | Central policy engine: 4-zone model, hard-coded deny-list, rate limiting, access checks |
 | `approval.py` | Approval gate manager: Redis hash storage, pub/sub notifications, async wait, timeout, proposed_content support, tracing hooks |
 | `approval_endpoints.py` | FastAPI router for approval inspection and resolution |
@@ -227,7 +236,9 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `agent` | Shell wrapper (`#!/bin/bash`) so `agent chat "msg"` works on PATH |
 | `Dockerfile` | Python 3.12, installs deps, copies CLI to `/usr/local/bin/agent` |
 | `requirements.txt` | fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml |
-| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills), runnable without Docker — **244 tests total** |
+| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills, memory, heartbeat), runnable without Docker — **357 tests total** |
+| `tests/test_memory.py` | 21 tests: `TestMemorySanitizer` (injection detection, HTML strip, control chars) + `TestMemoryStore` (add, search, get_recent, error propagation), all using sys.modules mocking. |
+| `tests/test_heartbeat.py` | 4 tests: tick invokes tracing, exception caught (loop continues), returns asyncio.Task, cancellation raises CancelledError. |
 
 **API Endpoints:**
 
@@ -270,6 +281,7 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 - ~~**RAG routing is keyword-based** - Checks for literal string "search docs" in the message.~~ FIXED (Phase 4A): Replaced with `rag_search` skill called by the LLM via tool calling.
 - ~~**`requirements.txt` is missing `chromadb`** - Fixed: `chromadb` added to requirements.txt.~~
 - **Web UI bypasses agent-core** — web-ui talks directly to Ollama via LangChain, bypassing skills and the policy engine.
+- ~~**Rate limiting is in-memory only**~~ FIXED (Phase 4B): Redis-backed rate limiting replaces in-memory sliding window. Rate counters survive container restarts.
 
 ### 3.3 telegram-gateway
 
@@ -401,15 +413,24 @@ my-agent/
 │   ├── cli.py                  # Click CLI: chat, serve commands
 │   ├── skill_runner.py         # execute_skill() pipeline + run_tool_loop() Ollama tool-call driver
 │   ├── secret_broker.py        # get(key) — reads env var at call time, never exposes to LLM
+│   ├── memory.py               # MemoryStore — ChromaDB agent_memory wrapper (add, search, get_recent)
+│   ├── memory_sanitizer.py     # sanitize() — strips control chars/HTML, detects prompt injection, raises MemoryPoisonError
+│   ├── heartbeat.py            # Background asyncio heartbeat loop (start_heartbeat, _tick, configurable interval)
 │   ├── skills/
 │   │   ├── __init__.py         # Package marker
 │   │   ├── base.py             # SkillMetadata dataclass + abstract SkillBase class
 │   │   ├── registry.py         # SkillRegistry: register, get, to_ollama_tools, __len__
 │   │   ├── rag_ingest.py       # RagIngestSkill — add text to ChromaDB (DefaultEmbeddingFunction, chunked)
 │   │   ├── rag_search.py       # RagSearchSkill — ChromaDB vector search (DefaultEmbeddingFunction)
-│   │   └── web_search.py       # WebSearchSkill — Tavily API, output sanitization, prompt injection guards
+│   │   ├── web_search.py       # WebSearchSkill — Tavily API, output sanitization, prompt injection guards
+│   │   ├── url_fetch.py        # UrlFetchSkill — HTTP fetch + HTML extraction, SSRF prevention
+│   │   ├── file_read.py        # FileReadSkill — zone-aware file read (no symlink escape, Zone 3+ denied)
+│   │   ├── file_write.py       # FileWriteSkill — zone-aware file write (sandbox: auto; identity: approval; system: deny)
+│   │   ├── pdf_parse.py        # PdfParseSkill — extract text from PDFs in /sandbox via pypdf
+│   │   ├── remember.py         # RememberSkill — store facts to agent_memory (sanitized, rate-limited 15/min)
+│   │   └── recall.py           # RecallSkill — semantic search over agent_memory (rate-limited 20/min)
 │   ├── tracing.py              # Structured JSON tracing: context vars, event emitters, Redis log storage
-│   ├── policy.yaml             # Zone rules, rate limits (rag_search, web_search), approval config (read-only mount)
+│   ├── policy.yaml             # Zone rules, Redis-backed rate limits (all 9 skills), approval config (read-only mount)
 │   ├── policy.py               # Central policy engine (zones, deny-list, rate limits)
 │   ├── approval.py             # Approval gate manager (Redis hash + pub/sub + proposed_content + tracing hooks)
 │   ├── approval_endpoints.py   # REST router: /approval/pending, /{id}, /{id}/respond
@@ -425,7 +446,9 @@ my-agent/
 │       ├── test_identity.py    # Identity loader tests: bootstrap detection, file loading, prompt building
 │       ├── test_bootstrap.py   # Bootstrap parser tests: proposal extraction, validation, completion, approval integration
 │       ├── test_tracing.py     # 55 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization
-│       └── test_skills.py      # 80 tests: SkillBase, SkillRegistry, execute_skill pipeline, RagIngestSkill, RagSearchSkill, WebSearchSkill, SecretBroker, run_tool_loop (no-tools, with-tools, per-turn limits, auto-retry on refusal)
+│       ├── test_skills.py      # 133 tests: SkillBase, SkillRegistry, execute_skill pipeline, all 9 skills, SecretBroker, run_tool_loop
+│       ├── test_memory.py      # 21 tests: MemorySanitizer (injection detection, HTML, control chars) + MemoryStore (add, search, get_recent)
+│       └── test_heartbeat.py   # 4 tests: tick→tracing, exception caught, returns Task, cancellation propagates
 │
 │
 ├── agent-identity/             # Bind-mounted to /agent in container (Zone 2)
@@ -461,9 +484,11 @@ my-agent/
 ├── SETUP_GUIDE.md              # Full setup walkthrough for new users (Phase 1 stack)
 ├── SETUP_GUIDE_2.md            # Policy engine, guardrails & identity bootstrap setup guide
 ├── SETUP_GUIDE_3.md            # Observability & structured tracing setup guide
+├── SETUP_GUIDE_4.md            # Persistent memory, heartbeat & recall setup guide (Phase 4C)
 ├── VIDEO_OUTLINE.md            # YouTube video 1 outline (foundation stack)
 ├── VIDEO_OUTLINE_2.md          # YouTube video 2 outline (guardrails + identity/bootstrap)
 ├── VIDEO_OUTLINE_3.md          # YouTube video 3 outline (observability + tracing)
+├── VIDEO_OUTLINE_4.md          # YouTube video 4 outline (persistent memory + heartbeat)
 └── PRD.md                      # This document
 ```
 
@@ -488,7 +513,7 @@ my-agent/
 | 13 | ~~Redis unauthenticated~~ | **High** | `docker-compose.yml` | Redis had no password. Any container on `agent_net` could read conversation history, approval data, and all logs. | FIXED |
 | 14 | ~~agent-core port bound to 0.0.0.0~~ | **Medium** | `docker-compose.yml` | Port 8000 was bound to all interfaces, exposing the agent to every device on the LAN. Changed to `127.0.0.1:8000:8000`. | FIXED |
 | 15 | ~~Bootstrap mode accessible from any channel~~ | **High** | `agent-core/app.py` | When `BOOTSTRAP.md` was present, Telegram or web-ui messages could participate in the identity creation conversation, allowing remote influence over `SOUL.md`, `IDENTITY.md`, and `USER.md`. Fixed with CLI-only channel gate (HTTP 403 for all other channels). Emergency reset via `agent bootstrap-reset` requires host machine access and `RESET` confirmation. | FIXED |
-| 16 | Rate limiting is in-memory only | **Low** | `agent-core/policy.py` | The sliding window rate limiter resets on container restart. Skills are now built and rate-limited, but the window resets on restart. Deferred to Phase 4B. | DEFERRED → 4B |
+| 16 | ~~Rate limiting is in-memory only~~ | **Low** | `agent-core/policy.py` | The sliding window rate limiter reset on container restart. Fixed in Phase 4B: Redis-backed rate limiting with atomic `INCR`/`EXPIRE` — counters survive restarts and are shared across processes. | FIXED |
 | 17 | Web UI bypasses agent-core | **Medium** | `web-ui/app.py` | Web UI talks directly to Ollama via LangChain instead of routing through agent-core. Policy engine, rate limiting, tracing, and skills (web_search, rag_search) do not apply to web UI conversations. Deferred — will be addressed in a future phase. | DEFERRED |
 | 18 | Tool-calling model hallucination | **Medium** | `agent-core/skill_runner.py` | qwen2.5:14b sometimes calls web_search correctly but then ignores the results and invents an answer from training data (especially for sports/news). Mitigated with "base your answer ONLY on search results" instructions and auto-retry on refusal, but not fully solved at the model level. | OPEN — model limitation |
 | 19 | ~~RAG embedding mismatch~~ | **High** | `web-ui/app.py`, `skills/rag_search.py` | Web UI ingested via LangChain+OllamaEmbeddings; `rag_search` queried via ChromaDB's DefaultEmbeddingFunction — incompatible vector spaces causing silent search failures. Fixed: all paths now use `DefaultEmbeddingFunction` consistently. `rag_ingest` skill added so agent can populate its own knowledge base. | FIXED |
@@ -513,13 +538,13 @@ The roadmap is designed to reach feature parity with Openclaw's core architectur
 | Policy, guardrails, observability | Four-zone permission model, approval gates, rate limits, structured tracing, health dashboard. **Built before soul/bootstrap.** | 3A (done), 3B (done), 3C (done) |
 | Modular skill system | Local `skills/` directory, hand-built or vetted, no external marketplaces. Each skill enforces its own security. | 4A (done) |
 | First skills (search, RAG) | Web search (Tavily) + RAG retrieval (ChromaDB) via Ollama tool calling. Secret broker for API keys. | 4A (done) |
-| More skills (files, URL fetch, PDF) | URL fetch, file read/write, PDF parse. | 4B |
-| Memory & scheduled tasks | Persistent memory with sanitization layer, heartbeat/cron, task management. | 4C |
+| More skills (files, URL fetch, PDF) | URL fetch, file read/write, PDF parse. | 4B (done) |
+| Memory & scheduled tasks | Persistent memory with sanitization layer, heartbeat/cron, task management. | 4C (done) |
 | Full system access (files, shell, APIs) | Four-zone model: `/sandbox` (free), `/agent` (approval), system (never), external (explore free, act with approval). Docker isolation + policy engine. | 4B-4F |
-| Credential security | Secret broker pattern — LLM never sees raw credentials | 4B |
-| Heartbeat / observe-reason-act loop | Background event loop in agent-core that checks triggers | 4C |
-| Jobs & automations system | Redis-backed task queue with scheduled + event triggers | 4C |
-| Persistent memory (notes, tasks, results) | Multi-layer: Redis (short-term) + ChromaDB (long-term) with sanitization | 4C |
+| Credential security | Secret broker pattern — LLM never sees raw credentials | 4B (done) |
+| Heartbeat / observe-reason-act loop | Background event loop in agent-core that checks triggers | 4C (done) |
+| Jobs & automations system | Redis-backed task queue with scheduled + event triggers | 4C-Part-2 |
+| Persistent memory (notes, tasks, results) | Multi-layer: Redis (short-term) + ChromaDB (long-term) with sanitization | 4C (done) |
 | Self-directed task graph / Mission Control | Agent can create/manage its own task lists and subtasks | 5 |
 | Proactive behavior rules | Heartbeat + standing instructions evaluate "should I act?" | 5 |
 
@@ -547,7 +572,7 @@ Openclaw's power comes from giving the agent real system access — and that's a
 
 The following items are intentionally deferred — they either have no impact until skills exist, or are addressed as part of Phase 4 design:
 
-- **Rate limiting durability** (→ Phase 4B) — In-memory sliding window resets on container restart. Skills are now rate-limited but the window resets on restart. Redis-backed rate limiting deferred to 4B.
+- ~~**Rate limiting durability** (→ Phase 4B)~~ — DONE. Redis-backed rate limiting with atomic INCR/EXPIRE. Counters survive container restarts.
 - **URL deny-list bypass hardening** (→ Phase 4B) — Hardened URL validation (DNS rebinding, unusual ports, Docker service name resolution) is a design requirement of the `url_fetch` skill, not a current gap.
 - **Shell deny-list regex hardening** (→ Phase 4F) — Obfuscation-resistant deny patterns are a design requirement of `shell_exec`. No shell skill exists yet.
 - ~~**Skill `sanitize_output()` enforcement** (→ Phase 4A)~~ — DONE. All skills implement `sanitize_output()`; the `execute_skill()` pipeline enforces it at execution time.
@@ -869,83 +894,89 @@ A dedicated Streamlit dashboard (separate service on port 8502) showing the oper
 
 ---
 
-#### Chunk 4B: First Skills — Search, Files & RAG
+#### Chunk 4B: First Skills — Search, Files & RAG ✅
 
-**Priority: HIGH — The first real capabilities.**
+**Status: COMPLETE**
 
-Skills that give the agent the ability to fetch URLs, read/write files, parse PDFs, and add documents to its knowledge base. `web_search`, `rag_search`, and `rag_ingest` are already complete (shipped pre-4B).
+Skills that give the agent the ability to fetch URLs, read/write files, parse PDFs, and add documents to its knowledge base. Redis-backed rate limiting was also added in this phase.
 
 | Skill | Description | Risk Level | Approval | Key Security | Status |
 |---|---|---|---|---|---|
 | `web_search` | Search the web via Tavily API | Low | No | API key via secret broker, result sanitization, rate limited | ✅ Done (4A) |
 | `rag_search` | Query ChromaDB vector database | Low | No | `DefaultEmbeddingFunction`, result truncation, rate limited | ✅ Done (4A + patch) |
 | `rag_ingest` | Add text to ChromaDB knowledge base | Low | No | `DefaultEmbeddingFunction`, chunked (800/100), rate limited (10/min) | ✅ Done (pre-4B patch) |
-| `url_fetch` | Fetch and extract content from a URL | Low | No | SSRF prevention (block internal IPs/Docker network), denied URL patterns, response size limit, content sanitization | ⬜ |
-| `file_read` | Read file contents | Low (sandbox), Medium (identity) | No | Path validation via `resolve_zone()`, no symlink escape, Zone 3+ denied | ⬜ |
-| `file_write` | Write/create files | Low (sandbox), High (identity) | No (sandbox), Yes (identity) | Path validation, zone enforcement, identity writes require owner approval | ⬜ |
-| `pdf_parse` | Extract text from PDF files | Low | No | Parse in sandbox only, size limits, output sanitization | ⬜ |
+| `url_fetch` | Fetch and extract content from a URL | Low | No | SSRF prevention (block internal IPs/Docker network), denied URL patterns, response size limit, content sanitization | ✅ Done (4B) |
+| `file_read` | Read file contents | Low (sandbox), Medium (identity) | No | Path validation via `resolve_zone()`, no symlink escape, Zone 3+ denied | ✅ Done (4B) |
+| `file_write` | Write/create files | Low (sandbox), High (identity) | No (sandbox), Yes (identity) | Path validation, zone enforcement, identity writes require owner approval | ✅ Done (4B) |
+| `pdf_parse` | Extract text from PDF files | Low | No | Parse in sandbox only, size limits, output sanitization via pypdf | ✅ Done (4B) |
 
 **Per-skill security details:**
 - **url_fetch**: Validates URL against denied patterns (paypal, stripe, billing, signup, register from policy.yaml). Blocks internal network addresses (10.x, 172.16-31.x, 192.168.x, localhost, Docker service names). Response body truncated and sanitized.
 - **file_read/file_write**: `validate()` resolves the real path via `os.path.realpath()` and checks against zone rules. `../` traversal and symlink escape are caught. Identity file writes go through the approval gate.
-- **pdf_parse**: Only operates on files in `/sandbox`. Uses a pure-Python PDF library (no shell calls). Output truncated to prevent context bloat.
+- **pdf_parse**: Only operates on files in `/sandbox`. Uses `pypdf` (pure Python, no shell). Output truncated to prevent context bloat.
+- **Redis-backed rate limiting**: Replaced in-memory sliding window with atomic Redis `INCR`/`EXPIRE`. Rate counters survive container restarts and are shared across processes.
 
-**Test criteria:**
-- URL fetch blocks internal network addresses (SSRF) and denied URL patterns
-- File write to `/sandbox/test.txt` succeeds without approval
-- File write to `/agent/SOUL.md` triggers approval gate
-- File write to `/app/anything` is denied outright
-- PDF parse extracts text from a test PDF in `/sandbox`
+**What was implemented:**
+- `agent-core/skills/url_fetch.py` — `UrlFetchSkill`: fetches URL, extracts text via BeautifulSoup. SSRF prevention via IP/hostname deny-list. Response size cap + sanitization.
+- `agent-core/skills/file_read.py` — `FileReadSkill`: zone-aware file read with `os.path.realpath()` path validation.
+- `agent-core/skills/file_write.py` — `FileWriteSkill`: zone-aware file write. Zone 1 auto-allowed; Zone 2 requires approval; Zone 3+ denied.
+- `agent-core/skills/pdf_parse.py` — `PdfParseSkill`: extracts text from PDFs in `/sandbox` using `pypdf`. Max 4000 chars output.
+- `agent-core/policy.py` — Redis-backed rate limiting: `check_rate_limit()` now uses `redis.incr(key)` + `redis.expire(key, window)` atomically. Rate state survives restarts.
+- `agent-core/policy.yaml` — Added rate limit entries for `url_fetch`, `file_read`, `file_write`, `pdf_parse`.
+- `agent-core/requirements.txt` — Added `beautifulsoup4`, `pypdf`.
+- 53 new tests added for the 4 new skills + Redis rate limiting. Total after 4B: **305 tests**.
+
+**Full details:** See `SETUP_GUIDE_4.md` (covers 4B + 4C together).
 
 ---
 
-#### Chunk 4C: Memory, Scheduled Tasks & Heartbeat
+#### Chunk 4C: Memory & Heartbeat ✅
 
-**Priority: HIGH — This is what turns a chatbot into an agent.**
+**Status: COMPLETE** (jobs/scheduled tasks deferred to 4C-Part-2)
 
-Persistent memory with a sanitization layer, heartbeat/cron infrastructure, and task management. The memory system must sanitize all inputs to prevent poisoning (e.g., web content with hidden instructions writing to agent memory, compromising all future conversations).
+Persistent long-term memory with a prompt-injection sanitization layer, working memory injection into the system prompt, auto-summarise of truncated history, and a background heartbeat loop.
 
-**Memory/State Storage:**
-- Multi-layer memory: Redis (fast short-term, session state) + ChromaDB (semantic long-term, user profile, notes)
-- `remember` skill — agent writes facts/observations to memory
-- `recall` skill — agent queries memory by semantic similarity or structured key
-- **Memory sanitization layer** — all content written to memory is sanitized:
-  - Strip hidden instructions, HTML tags, control characters
-  - Detect and flag potential prompt injection patterns before storage
-  - Separate "agent-generated" from "external-sourced" memory entries (web content flagged differently than owner-confirmed facts)
-  - Rate limit memory writes to prevent flooding
-- Long-term user profile: preferences, identity, recurring contexts (ChromaDB collection)
-- Notes, tasks, and results store (Mission Control): structured Redis hashes + ChromaDB for search
+**Core problem solved:** Context windows are small (8K tokens standard). The 6K history budget covers ~15–20 turns. Once old messages are dropped, they're gone.
 
-**Heartbeat/Cron Infrastructure:**
-- Background task in agent-core (FastAPI `on_startup`) that runs every N seconds (configurable via `HEARTBEAT_INTERVAL`)
-- On each tick: check the job queue (Redis) for due tasks, evaluate triggers, execute via the standard skill pipeline
-- Redis-backed job queue with three trigger types:
-  - **Scheduled**: cron-style recurring tasks ("every morning at 9am, summarize my repos")
-  - **Event-driven**: fire when a condition is met ("when a new GitHub issue is opened, triage it")
-  - **One-shot**: deferred tasks ("remind me about X in 2 hours")
-- Prevent overlapping executions (Redis lock)
+**Solution — three-layer memory architecture:**
+1. **Short-term:** Existing Redis rolling window (unchanged)
+2. **Long-term:** ChromaDB `agent_memory` collection — separate from `rag_data`, metadata schema: `{user_id, type, source, timestamp}`
+3. **Working memory:** Compact auto-injected block in system prompt (`## Working Memory` section, ~150–200 tokens)
 
-**Task Management Skills:**
-- `create_task` — create a scheduled, event-driven, or one-shot task (requires approval for recurring tasks)
-- `list_tasks` — show pending/active/completed tasks
-- `cancel_task` — cancel a scheduled task (requires approval)
-- New API endpoints: `POST /jobs`, `GET /jobs`, `DELETE /jobs/{id}`
-- Task persistence — survives container restarts via Redis
+**What was implemented:**
 
-**Key decisions:**
-- Heartbeat runs inside agent-core vs. a separate scheduler container
-- Memory sanitization strictness (aggressive vs. permissive flagging)
-- How to distinguish trusted (owner-confirmed) vs. untrusted (web-sourced) memory entries
-- Default heartbeat interval (60s? 300s?)
+- `agent-core/memory.py` — `MemoryStore`: ChromaDB `agent_memory` wrapper. `add(content, type, user_id)` returns memory_id. `search(query, user_id, n=5)` semantic search. `get_recent(user_id, n=8)` returns last 50 sorted by timestamp, top n. Uses `DefaultEmbeddingFunction` (consistent vector space with `rag_data`).
+- `agent-core/memory_sanitizer.py` — `sanitize(content)`: strips null bytes + control chars → checks 8 injection patterns (`ignore previous instructions`, `system prompt`, `disregard instructions`, `you are now`, `new instructions:`, `</?system`, `[INST]`, `<<SYS>>`) → strips HTML tags → collapses whitespace. Critical ordering: injection check BEFORE HTML strip (prevents `<<SYS>>` bypass). Raises `MemoryPoisonError(ValueError)` on detection.
+- `agent-core/heartbeat.py` — `heartbeat_loop(state)`: asyncio loop, `await asyncio.sleep(HEARTBEAT_INTERVAL)` then `_tick(state)`, catches all `Exception` (not `BaseException` — `CancelledError` propagates). `_tick()` emits heartbeat trace event. `start_heartbeat()` wraps loop in `asyncio.create_task()`.
+- `agent-core/skills/remember.py` — `RememberSkill`: params `content` (max 1000 chars), `type` (fact/observation/preference, default fact). `validate()` calls `sanitize()`, returns error on `MemoryPoisonError`. `execute()` pops `_user_id` from params (injected by skill_runner), calls `MemoryStore().add()`. LOW risk, no approval, rate-limited (15/min), max 5 calls/turn.
+- `agent-core/skills/recall.py` — `RecallSkill`: params `query` (max 500 chars), `n_results` (1–10, default 5). `sanitize_output()` returns numbered list `"N. [{type}, {age}] {content}"` with age formatted as "just now/5m/2h/3d/2w/1mo". LOW risk, no approval, rate-limited (20/min).
+- `agent-core/skill_runner.py` — One-line change: `result = await skill.execute({**params, "_user_id": user_id})` — injects `_user_id` AFTER validation, BEFORE execute. Backward-compatible (existing skills ignore unknown keys).
+- `agent-core/app.py` — Four additions:
+  1. Skill registration: `RememberSkill()`, `RecallSkill()`
+  2. `build_working_memory(user_id)`: calls `memory_store.get_recent(n=8)`, formats as `## Working Memory` block, 1200-char hard cap, injected between identity content and tool hints. Fails silently if ChromaDB unavailable.
+  3. `_summarise_and_store(dropped, user_id)`: async fire-and-forget, summarises dropped history via Ollama (2048 ctx), stores as `type="summary"` in `agent_memory`. Triggered when history is truncated.
+  4. Startup event: `start_heartbeat(app.state)`
+- `agent-core/policy.yaml` — Added `remember` (15/min) and `recall` (20/min) rate limits.
+- `agent-core/tests/test_memory.py` — 21 tests: `TestMemorySanitizer` (13) + `TestMemoryStore` (8). ChromaDB mocked via `patch.dict(sys.modules, ...)` for lazy-import isolation.
+- `agent-core/tests/test_heartbeat.py` — 4 tests: tick invokes tracing, exception caught (loop continues), returns asyncio.Task, cancellation raises CancelledError.
+- `agent-core/tests/test_skills.py` — Appended `TestRememberSkill` (14 tests) + `TestRecallSkill` (13 tests). Skills mocked via `patch("skills.remember.MemoryStore", ...)`.
+- **Total after 4C: 357 tests** (up from 305).
 
-**Test criteria:**
-- Agent can `remember` a fact and `recall` it in a later conversation
-- Memory sanitization strips hidden instructions from web-sourced content
-- Scheduled task fires without user input
-- Agent can create its own follow-up tasks during a conversation
-- Tasks persist across container restarts
-- Rate limiting prevents memory flooding
+**Key decisions made:**
+- ChromaDB collection `agent_memory` is completely separate from `rag_data` (different metadata schema, different purpose). Same `DefaultEmbeddingFunction` for compatible vector space.
+- Injection check runs BEFORE HTML stripping — critical to prevent `<<SYS>>` pattern from being mangled and bypassing detection.
+- `CancelledError` inherits from `BaseException` in Python 3.8+ — `except Exception` in heartbeat loop correctly lets task cancellation propagate.
+- Auto-summarise is fully fire-and-forget (`asyncio.create_task`) — never blocks a chat response, never crashes on failure.
+- Working memory hard cap at 1200 chars (~300 tokens) — prevents working memory from eating too much of the system prompt budget.
+- Jobs/scheduled tasks deferred to 4C-Part-2 — heartbeat infrastructure is in place, job queue execution not yet wired.
+
+**Deferred to 4C-Part-2:**
+- Redis-backed job queue with scheduled/event-driven/one-shot triggers
+- `create_task`, `list_tasks`, `cancel_task` skills
+- `POST /jobs`, `GET /jobs`, `DELETE /jobs/{id}` API endpoints
+- Overlapping-execution prevention via Redis locks
+
+**Full details:** See `SETUP_GUIDE_4.md` and `VIDEO_OUTLINE_4.md`.
 
 ---
 
@@ -1137,12 +1168,7 @@ All secrets are stored in `.env` in the project root. **Never commit this file.*
 | `TOOL_MODEL` | agent-core | Model used for tool calling when skills are registered (default `qwen2.5:14b`). Overrides auto-routing for all `model=null` requests. Must support Ollama's function-calling format. |
 | `MAX_TOOL_ITERATIONS` | agent-core | Hard cap on tool-call rounds per request before forcing a final answer (default `5`) |
 | `TAVILY_API_KEY` | secret broker → web_search skill | API key for Tavily web search. Get a free key at tavily.com. Set in `.env`; injected into agent-core via docker-compose. Never passed to the LLM. |
-
-**Future variables (as features are added):**
-
-| Variable | Used By | Description |
-|---|---|---|
-| `HEARTBEAT_INTERVAL` | agent-core | Seconds between heartbeat ticks (default 60) |
+| `HEARTBEAT_INTERVAL_SECONDS` | agent-core | Seconds between heartbeat ticks (default `60`). Set to `0` to disable. |
 
 ---
 
