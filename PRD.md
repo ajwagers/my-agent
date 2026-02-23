@@ -325,7 +325,9 @@ REDIS_URL=redis://redis:6379       # For approval pub/sub (set in compose)
 - Persistent volume `chroma_data` at `/chroma/chroma`
 - Internal port 8000, host port 8100
 - Runs via `chroma run --host 0.0.0.0 --port 8000`
-- Used by agent-core's `RagSearchSkill` (via Ollama tool calling) and by the web UI for embeddings + chat persistence
+- Two collections:
+  - `rag_data` — document knowledge base used by `rag_ingest` / `rag_search` skills and web UI
+  - `agent_memory` — agent's personal long-term memory used by `remember` / `recall` skills; scoped per `user_id`; both use `DefaultEmbeddingFunction` (all-MiniLM-L6-v2)
 
 ### 3.5 web-ui
 
@@ -530,7 +532,7 @@ The roadmap is designed to reach feature parity with Openclaw's core architectur
 
 | Openclaw Pillar | Our Approach | Phase |
 |---|---|---|
-| Long-lived agent on your own machine | Docker Compose, `restart: unless-stopped`, heartbeat loop | 1 (done) + 4C |
+| Long-lived agent on your own machine | Docker Compose, `restart: unless-stopped`, heartbeat loop | 1 (done) + 4C (done) |
 | Gateway architecture (one brain, many apps) | agent-core hub + thin adapter pattern | 1 (done) |
 | Model-agnostic / brain-vs-muscle routing | Multi-model Ollama + keyword-based auto-routing (`route_model()`) | 2 (done) |
 | Soul / Persona file | Conversational bootstrap (Openclaw-inspired) with policy-gated file writes. SOUL.md, IDENTITY.md, USER.md co-authored by agent + owner. | 2A (done) |
@@ -573,7 +575,7 @@ Openclaw's power comes from giving the agent real system access — and that's a
 The following items are intentionally deferred — they either have no impact until skills exist, or are addressed as part of Phase 4 design:
 
 - ~~**Rate limiting durability** (→ Phase 4B)~~ — DONE. Redis-backed rate limiting with atomic INCR/EXPIRE. Counters survive container restarts.
-- **URL deny-list bypass hardening** (→ Phase 4B) — Hardened URL validation (DNS rebinding, unusual ports, Docker service name resolution) is a design requirement of the `url_fetch` skill, not a current gap.
+- **URL deny-list bypass hardening** — Phase 4B `url_fetch` blocks private IPs (10.x, 172.16-31.x, 192.168.x) and Docker service hostnames. DNS rebinding prevention and unusual port blocking are not yet implemented. Remaining hardening deferred to Phase 4F alongside `http_api`.
 - **Shell deny-list regex hardening** (→ Phase 4F) — Obfuscation-resistant deny patterns are a design requirement of `shell_exec`. No shell skill exists yet.
 - ~~**Skill `sanitize_output()` enforcement** (→ Phase 4A)~~ — DONE. All skills implement `sanitize_output()`; the `execute_skill()` pipeline enforces it at execution time.
 - **Container hardening** (→ Chunk 3D) — Non-root user, read-only filesystem, seccomp/AppArmor profiles. Intentionally deferred.
@@ -754,7 +756,7 @@ Openclaw users run a strong reasoning model for planning and a cheaper/faster mo
 >
 > **Why this comes before everything else:** Openclaw's approach is to add capabilities first and bolt on safety later. We invert that completely. Chunk 3A was the first thing built — before the soul file, before the bootstrap conversation, before any skill. The guardrail framework exists before the agent gets its personality. Chunk 2A (Soul/Bootstrap) is the first consumer of the policy engine.
 >
-> **Current status:** 3A (Policy Engine), 3B (Observability & Tracing), and 3C (Health Dashboard) are complete. 3D (Container Hardening) and 3E (Multi-Tenant) are deferred. Next up: Phase 4 (Skill Framework + Skills).
+> **Current status:** 3A (Policy Engine), 3B (Observability & Tracing), and 3C (Health Dashboard) are complete. 3D (Container Hardening) and 3E (Multi-Tenant) are deferred. Phase 4A (skill framework), 4B (files/URL/PDF + Redis rate limiting), and 4C (memory + heartbeat) are all complete. Next up: Phase 4C-Part-2 (job queue + scheduled tasks) or Phase 4D (math/physics/media skills).
 
 #### Chunk 3A: Policy Engine & Guardrails ✅
 
@@ -926,7 +928,7 @@ Skills that give the agent the ability to fetch URLs, read/write files, parse PD
 - `agent-core/requirements.txt` — Added `beautifulsoup4`, `pypdf`.
 - 53 new tests added for the 4 new skills + Redis rate limiting. Total after 4B: **305 tests**.
 
-**Full details:** See `SETUP_GUIDE_4.md` (covers 4B + 4C together).
+**Note:** No dedicated setup guide exists for 4B — code was committed directly and is self-documenting. `SETUP_GUIDE_4.md` covers Phase 4C and lists 4B as a prerequisite.
 
 ---
 
