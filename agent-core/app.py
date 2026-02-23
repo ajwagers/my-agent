@@ -5,6 +5,7 @@ from ollama import Client
 import asyncio
 import os
 import json
+import time
 import redis
 from datetime import datetime, timezone
 
@@ -14,6 +15,8 @@ from approval_endpoints import router as approval_router
 import identity as identity_module
 import bootstrap
 import tracing
+from memory import MemoryStore
+from heartbeat import start_heartbeat
 from skills.registry import SkillRegistry
 from skills.rag_ingest import RagIngestSkill
 from skills.rag_search import RagSearchSkill
@@ -22,6 +25,8 @@ from skills.file_read import FileReadSkill
 from skills.file_write import FileWriteSkill
 from skills.url_fetch import UrlFetchSkill
 from skills.pdf_parse import PdfParseSkill
+from skills.remember import RememberSkill
+from skills.recall import RecallSkill
 from skill_runner import run_tool_loop
 
 app = FastAPI()
@@ -62,6 +67,11 @@ skill_registry.register(FileReadSkill())
 skill_registry.register(FileWriteSkill())
 skill_registry.register(UrlFetchSkill())
 skill_registry.register(PdfParseSkill())
+skill_registry.register(RememberSkill())
+skill_registry.register(RecallSkill())
+
+# Long-term memory singleton — used for working memory injection in system prompt
+memory_store = MemoryStore()
 
 # Config
 HISTORY_TOKEN_BUDGET = int(os.getenv("HISTORY_TOKEN_BUDGET", "6000"))
@@ -80,6 +90,78 @@ MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
 def estimate_tokens(text):
     """Rough chars-to-tokens heuristic."""
     return len(text) // 4
+
+
+def _format_age(seconds: float) -> str:
+    """Format elapsed seconds into a compact human-readable age string."""
+    if seconds < 60:
+        return "just now"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{int(minutes)}m"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{int(hours)}h"
+    days = hours / 24
+    if days < 7:
+        return f"{int(days)}d"
+    weeks = days / 7
+    if weeks < 4.3:
+        return f"{int(weeks)}w"
+    months = days / 30
+    return f"{int(months)}mo"
+
+
+def build_working_memory(user_id: str) -> str:
+    """Build a compact working memory block for injection into the system prompt.
+
+    Returns empty string if ChromaDB is unavailable or no memories exist.
+    Hard cap: 1200 chars (~300 tokens).
+    """
+    try:
+        entries = memory_store.get_recent(user_id, n=8)
+    except Exception:
+        return ""
+    if not entries:
+        return ""
+    now = time.time()
+    lines = []
+    for entry in entries:
+        memory_type = entry.get("type", "fact")
+        content = entry.get("content", "")
+        timestamp = entry.get("timestamp", now)
+        age = _format_age(now - timestamp)
+        lines.append(f"- [{memory_type}] {content} ({age})")
+    block = "## Working Memory\n" + "\n".join(lines)
+    if len(block) > 1200:
+        block = block[:1197] + "[...]"
+    return block
+
+
+async def _summarise_and_store(dropped: list, user_id: str) -> None:
+    """Summarise dropped history messages and store to long-term memory.
+
+    Fire-and-forget — never raises; all errors are silently swallowed.
+    """
+    try:
+        text = "\n".join(
+            f"{m['role'].upper()}: {m.get('content', '')[:400]}"
+            for m in dropped
+        )
+        summary_prompt = (
+            "Summarise the following conversation excerpt in 2-3 sentences. "
+            "Focus on facts, preferences, and important context:\n\n" + text
+        )
+        response = ollama_client.chat(
+            model=DEFAULT_MODEL,
+            messages=[{"role": "user", "content": summary_prompt}],
+            options={"num_ctx": 2048},
+        )
+        summary = response["message"].get("content", "").strip()
+        if summary:
+            memory_store.add(summary, "summary", user_id, source="agent")
+    except Exception:
+        pass
 
 class ChatRequest(BaseModel):
     message: str
@@ -145,6 +227,10 @@ async def chat(request: ChatRequest):
     date_line = f"Current date and time (UTC): {now.strftime('%A, %B %d, %Y %H:%M UTC')}"
     system_prompt = date_line + "\n\n" + identity_module.build_system_prompt(loaded_identity)
 
+    memory_block = build_working_memory(user_id)
+    if memory_block:
+        system_prompt += "\n\n" + memory_block
+
     if len(skill_registry) > 0:
         system_prompt += """
 
@@ -168,7 +254,11 @@ more specific query rather than guessing.
 - Use **file_read** to read files from /sandbox, /agent, or /app.
 - Use **file_write** to write or append files to /sandbox.
 - Use **url_fetch** to retrieve content from a specific URL.
-- Use **pdf_parse** to extract text from PDF files stored in /sandbox."""
+- Use **pdf_parse** to extract text from PDF files stored in /sandbox.
+- Use **remember** to store important facts, preferences, or observations about \
+the user that should persist across sessions.
+- Use **recall** to search long-term memory for previously stored facts or \
+preferences about the user."""
     in_bootstrap = identity_module.is_bootstrap_mode()
 
     # Bootstrap is CLI-only — lock out Telegram, web-ui, and any remote caller.
@@ -185,8 +275,11 @@ more specific query rather than guessing.
         truncated = list(history)
     else:
         truncated = list(history)
+        dropped = []
         while len(truncated) > 1 and sum(estimate_tokens(m["content"]) for m in truncated) > HISTORY_TOKEN_BUDGET:
-            truncated.pop(0)
+            dropped.append(truncated.pop(0))
+        if dropped:
+            asyncio.create_task(_summarise_and_store(dropped, user_id))
 
     # Prepend system message to the messages sent to Ollama
     ollama_messages = [{"role": "system", "content": system_prompt}] + truncated
@@ -277,6 +370,11 @@ async def policy_reload():
     """Hot-reload policy.yaml without restarting the container."""
     app.state.policy_engine.load_config()
     return {"status": "reloaded"}
+
+@app.on_event("startup")
+async def startup():
+    start_heartbeat(app.state)
+
 
 if __name__ == "__main__":
     import uvicorn

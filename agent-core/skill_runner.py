@@ -110,9 +110,11 @@ async def execute_skill(
             return f"[{skill_name}] Approval error: {exc}"
 
     # 4. Execute with timing
+    # Inject context for skills that need user scoping (e.g. remember, recall).
+    # Done after validation so _user_id doesn't interfere with param checks.
     start_time = time.time()
     try:
-        result = await skill.execute(params)
+        result = await skill.execute({**params, "_user_id": user_id})
         status = "success"
     except Exception as exc:
         duration_ms = (time.time() - start_time) * 1000

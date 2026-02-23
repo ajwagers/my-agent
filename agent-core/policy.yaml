@@ -54,6 +54,12 @@ rate_limits:
   pdf_parse:
     max_calls: 10
     window_seconds: 60
+  remember:
+    max_calls: 15
+    window_seconds: 60
+  recall:
+    max_calls: 20
+    window_seconds: 60
 
 max_tool_iterations: 5  # operator-tunable hard cap on tool-calling rounds per request
 
