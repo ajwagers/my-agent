@@ -81,7 +81,7 @@ DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "phi4-mini:latest")
 REASONING_MODEL = os.getenv("REASONING_MODEL", "qwen3:8b")
 DEEP_MODEL = os.getenv("DEEP_MODEL", "qwen2.5:14b")
 DEEP_NUM_CTX = int(os.getenv("DEEP_NUM_CTX", "32768"))
-CODING_MODEL = os.getenv("CODING_MODEL", "codegemma:latest")
+CODING_MODEL = os.getenv("CODING_MODEL", "qwen3:8b")
 REASONING_KEYWORDS = [
     "explain", "analyze", "plan", "why", "compare",
     "reason", "think", "step by step", "how does", "what if",
@@ -318,9 +318,6 @@ preferences about the user."""
     # Run through tool loop (handles both tool-calling and plain chat)
     ctx = DEEP_NUM_CTX if model in (DEEP_MODEL, CODING_MODEL) else NUM_CTX
     tools = skill_registry.to_ollama_tools() or None
-    # codegemma does not support Ollama tool calling — strip tools for plain chat
-    if model == CODING_MODEL:
-        tools = None
     try:
         assistant_content, updated_messages, tool_stats = await run_tool_loop(
             ollama_client=ollama_client,

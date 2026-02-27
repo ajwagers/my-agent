@@ -45,7 +45,7 @@ services:
       - DEEP_NUM_CTX=32768
       - NUM_CTX=32768
       - TOOL_MODEL=qwen3:8b
-      - CODING_MODEL=codegemma:latest
+      - CODING_MODEL=qwen3:8b
       - EMBED_MODEL=nomic-embed-text
       - OLLAMA_HOST=http://ollama-runner:11434
       - WATCH_MODEL=qwen3.5:35b-a3b
