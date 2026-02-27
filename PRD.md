@@ -2,13 +2,13 @@
 
 > **Last Updated:** 2026-02-26
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Model & embedding upgrades (post-4C): phi4-mini replaces phi3 as DEFAULT_MODEL; qwen3:8b replaces llama3.1:8b as REASONING_MODEL and TOOL_MODEL; dedicated CODING_MODEL (codegemma) with separate coding keyword routing; OllamaEmbeddingFunction + nomic-embed-text replaces DefaultEmbeddingFunction across all ChromaDB paths; heartbeat extended with Ollama version watcher (notifies via Telegram when Ollama updates); Telegram gateway upgraded with Redis chat queue + background worker (immediate ack, sequential processing, asyncio-safe blocking calls); 503 error handling for model-level failures. Next up: Phase 4D (math, physics, media skills).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Model & embedding upgrades (post-4C): phi4-mini replaces phi3 as DEFAULT_MODEL; qwen3:8b replaces llama3.1:8b as REASONING_MODEL and TOOL_MODEL; dedicated CODING_MODEL (qwen3:8b, consolidated from codegemma) with separate coding keyword routing; OllamaEmbeddingFunction + nomic-embed-text replaces DefaultEmbeddingFunction across all ChromaDB paths; heartbeat extended with Ollama version watcher (notifies via Telegram when Ollama updates); Telegram gateway upgraded with Redis chat queue + background worker (immediate ack, sequential processing, asyncio-safe blocking calls); 503 error handling for model-level failures. Next up: Phase 4D (math, physics, media skills).
 
 ---
 
 ## 1. Project Overview
 
-**My-Agent** is a self-hosted, multi-interface AI agent stack running entirely on local hardware via Docker. It wraps locally-hosted LLMs (Ollama with phi4-mini for fast tasks, qwen3:8b for reasoning and tool calling, codegemma for coding tasks, and qwen2.5:14b for deep/long-context tasks) behind a central FastAPI service, with multiple frontends (CLI, Telegram bot, Streamlit web UI) and optional RAG via ChromaDB. The agent can search the web in real time via the Tavily API and query uploaded documents via ChromaDB. Embeddings use nomic-embed-text via OllamaEmbeddingFunction for a fully self-hosted vector pipeline.
+**My-Agent** is a self-hosted, multi-interface AI agent stack running entirely on local hardware via Docker. It wraps locally-hosted LLMs (Ollama with phi4-mini for fast tasks, qwen3:8b for reasoning, tool calling, and coding tasks, and qwen2.5:14b for deep/long-context tasks) behind a central FastAPI service, with multiple frontends (CLI, Telegram bot, Streamlit web UI) and optional RAG via ChromaDB. The agent can search the web in real time via the Tavily API and query uploaded documents via ChromaDB. Embeddings use nomic-embed-text via OllamaEmbeddingFunction for a fully self-hosted vector pipeline.
 
 The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a local-first, action-oriented AI agent that runs on your own machine, connects to your chat apps, and can eventually execute real tasks with persistent memory.
 
@@ -154,7 +154,7 @@ User input (Telegram / Web UI / CLI)
   → route_model() selects model:
       - model="deep" alias → DEEP_MODEL (qwen2.5:14b, 32K ctx)
       - model="reasoning" alias → REASONING_MODEL (qwen3:8b)
-      - model="code" alias → CODING_MODEL (codegemma:latest)
+      - model="code" alias → CODING_MODEL (qwen3:8b)
       - model=<specific> → use as-is (client override)
       - model=None + skills registered + coding keywords → CODING_MODEL
       - model=None + skills registered → TOOL_MODEL (qwen3:8b)
@@ -195,7 +195,7 @@ User input (Telegram / Web UI / CLI)
   - `phi4-mini:latest` (3.8B params, 2.5 GB) — DEFAULT_MODEL for fast general tasks
   - `qwen3:8b` (8B params, 5.2 GB on disk / ~10 GB loaded) — REASONING_MODEL + TOOL_MODEL; 74% GPU / 26% CPU on GTX 1070
   - `qwen2.5:14b` (14B params, 9 GB) — DEEP_MODEL for long-context tasks (32K ctx)
-  - `codegemma:latest` (7B params, 5 GB) — CODING_MODEL for code/debug/implement tasks
+  - `qwen3:8b` — also serves as CODING_MODEL for code/debug/implement tasks (consolidated; codegemma removed — does not support Ollama tool calling)
   - `nomic-embed-text` (274 MB) — embedding model for ChromaDB (OllamaEmbeddingFunction)
 - Persistent volume `ollama_data` at `/root/.ollama`
 - Healthcheck: `ollama list` every 30s
@@ -275,10 +275,10 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 **Model routing (`route_model()` + skill override):**
 - `model="deep"` → resolves to `DEEP_MODEL` (qwen2.5:14b, 32K ctx)
 - `model="reasoning"` → resolves to `REASONING_MODEL` (qwen3:8b)
-- `model="code"` → resolves to `CODING_MODEL` (codegemma:latest)
+- `model="code"` → resolves to `CODING_MODEL` (qwen3:8b)
 - `model=<any other value>` → used as-is (client override)
 - `model=null` (default) with skills registered → checked for coding keywords first, then defaults to TOOL_MODEL:
-  - Coding keywords match → `CODING_MODEL` (codegemma:latest, 32K ctx)
+  - Coding keywords match → `CODING_MODEL` (qwen3:8b, 32K ctx)
   - No coding keywords → `TOOL_MODEL` (qwen3:8b)
 - `model=null` with no skills → keyword heuristic: coding keywords → `CODING_MODEL`; reasoning keywords → `REASONING_MODEL`; else → `DEFAULT_MODEL`
 - Coding keywords: `code`, `debug`, `implement`, `refactor`, `function`, `class`, `script`, `bug`, `fix`, `test`, `write a program/script/function/class/test`, `unit test`
@@ -535,6 +535,7 @@ my-agent/
 | 19 | ~~RAG embedding mismatch~~ | **High** | `web-ui/app.py`, `skills/rag_search.py` | Web UI ingested via LangChain+OllamaEmbeddings; `rag_search` queried via ChromaDB's DefaultEmbeddingFunction — incompatible vector spaces causing silent search failures. Fixed: all paths now use `OllamaEmbeddingFunction` (nomic-embed-text) consistently. `rag_ingest` skill added so agent can populate its own knowledge base. | FIXED |
 | 20 | ~~Model OOM crash (500 error)~~ | **High** | `agent-core/app.py` | `qwen3:30b-a3b` (22.5 GB RAM) was set as TOOL_MODEL on a 15 GB system — Ollama threw an unhandled `ResponseError`, FastAPI returned 500. Fixed: (1) try/except around `run_tool_loop()` now returns HTTP 503 with a clear message; (2) TOOL_MODEL switched to `qwen3:8b` (5.2 GB) which fits. | FIXED |
 | 21 | ~~Blocking HTTP call in telegram event loop~~ | **Medium** | `telegram-gateway/bot.py` | `handle_message` called `requests.post` synchronously in an async handler — blocked the asyncio event loop, preventing the typing indicator from refreshing. Fixed: requests are now offloaded to `asyncio.to_thread` inside `_queue_worker`. | FIXED |
+| 22 | ~~codegemma 503 error (no tool-calling support)~~ | **High** | `agent-core/app.py` | `codegemma:latest` does not support Ollama tool calling — any request routed to CODING_MODEL with skills registered caused a 503. Fixed: CODING_MODEL consolidated to `qwen3:8b` which supports tool calling natively and matches or exceeds codegemma on coding benchmarks. codegemma removed entirely. | FIXED |
 
 ---
 
@@ -1146,7 +1147,7 @@ The following capabilities are explicitly deferred:
 | LLM Runtime | Ollama | latest | Local model inference |
 | Default Model | Phi-4 Mini | phi4-mini:latest | 3.8B params, fast tasks |
 | Reasoning / Tool Model | Qwen 3 | qwen3:8b | 8B params, reasoning, tool calling (74% GPU / 26% CPU on GTX 1070) |
-| Coding Model | CodeGemma | codegemma:latest | 7B params, code/debug/implement tasks |
+| Coding Model | Qwen 3 | qwen3:8b | Consolidated with REASONING_MODEL/TOOL_MODEL; codegemma removed (no tool-calling support) |
 | Deep Model | Qwen 2.5 | qwen2.5:14b | 14B params, long-context deep tasks (32K ctx) |
 | Embedding Model | nomic-embed-text | (via Ollama) | Served by ollama-runner; used by all ChromaDB paths via OllamaEmbeddingFunction |
 | Agent API | FastAPI | 0.115.0 | Central /chat endpoint |
@@ -1180,7 +1181,7 @@ All secrets are stored in `.env` in the project root. **Never commit this file.*
 | `AGENT_API_KEY` | agent-core, telegram-gateway, web-ui | Shared API key required in the `X-Api-Key` header for `POST /chat` and `POST /approval/{id}/respond`. Generated with `secrets.token_urlsafe(32)`. |
 | `DEFAULT_MODEL` | agent-core | Default Ollama model for fast tasks (default `phi4-mini:latest`) |
 | `REASONING_MODEL` | agent-core | Stronger Ollama model for planning/reasoning (default `qwen3:8b`) |
-| `CODING_MODEL` | agent-core | Model used for coding tasks when coding keywords detected (default `codegemma:latest`). Use model alias `"code"` to force. |
+| `CODING_MODEL` | agent-core | Model used for coding tasks when coding keywords detected (default `qwen3:8b`). Use model alias `"code"` to force. |
 | `BOOTSTRAP_MODEL` | agent-core | Model used during bootstrap conversation (default `mistral:latest`) |
 | `DEEP_MODEL` | agent-core | Large-context model for complex tasks (default `qwen2.5:14b`) |
 | `DEEP_NUM_CTX` | agent-core | Context window size for deep/coding models (default `32768`) |
