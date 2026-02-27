@@ -26,7 +26,7 @@ def _chroma_modules(mock_collection=None):
     mock_chromadb.HttpClient.return_value = mock_client
 
     mock_ef_module = MagicMock()
-    mock_ef_module.DefaultEmbeddingFunction = MagicMock(return_value=MagicMock())
+    mock_ef_module.OllamaEmbeddingFunction = MagicMock(return_value=MagicMock())
 
     modules = {
         "chromadb": mock_chromadb,

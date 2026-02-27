@@ -1,14 +1,14 @@
 # My-Agent: Product Requirements Document
 
-> **Last Updated:** 2026-02-23
+> **Last Updated:** 2026-02-26
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Next up: Phase 4D (math, physics, media skills).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Model & embedding upgrades (post-4C): phi4-mini replaces phi3 as DEFAULT_MODEL; qwen3:8b replaces llama3.1:8b as REASONING_MODEL and TOOL_MODEL; dedicated CODING_MODEL (codegemma) with separate coding keyword routing; OllamaEmbeddingFunction + nomic-embed-text replaces DefaultEmbeddingFunction across all ChromaDB paths; heartbeat extended with Ollama version watcher (notifies via Telegram when Ollama updates); Telegram gateway upgraded with Redis chat queue + background worker (immediate ack, sequential processing, asyncio-safe blocking calls); 503 error handling for model-level failures. Next up: Phase 4D (math, physics, media skills).
 
 ---
 
 ## 1. Project Overview
 
-**My-Agent** is a self-hosted, multi-interface AI agent stack running entirely on local hardware via Docker. It wraps locally-hosted LLMs (Ollama with Phi-3 Mini for fast tasks, Llama 3.1 8B for reasoning, and Qwen 2.5 14B for tool calling and deep tasks) behind a central FastAPI service, with multiple frontends (CLI, Telegram bot, Streamlit web UI) and optional RAG via ChromaDB. The agent can search the web in real time via the Tavily API and query uploaded documents via ChromaDB.
+**My-Agent** is a self-hosted, multi-interface AI agent stack running entirely on local hardware via Docker. It wraps locally-hosted LLMs (Ollama with phi4-mini for fast tasks, qwen3:8b for reasoning and tool calling, codegemma for coding tasks, and qwen2.5:14b for deep/long-context tasks) behind a central FastAPI service, with multiple frontends (CLI, Telegram bot, Streamlit web UI) and optional RAG via ChromaDB. The agent can search the web in real time via the Tavily API and query uploaded documents via ChromaDB. Embeddings use nomic-embed-text via OllamaEmbeddingFunction for a fully self-hosted vector pipeline.
 
 The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a local-first, action-oriented AI agent that runs on your own machine, connects to your chat apps, and can eventually execute real tasks with persistent memory.
 
@@ -22,9 +22,10 @@ The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a 
 ### Target Environment
 
 - Linux (primary), Mac, or Windows (WSL2)
-- CPU-only (no GPU required)
-- 8+ GB RAM recommended (4 GB minimum for phi3)
-- Docker and Docker Compose
+- GPU optional but strongly recommended — Ollama auto-detects CUDA; partial GPU offloading when VRAM < model size
+- 15 GB RAM minimum for current model stack (phi4-mini 2.5 GB, qwen3:8b 5.2 GB, qwen2.5:14b 9 GB)
+- NVIDIA GPU with 8+ GB VRAM ideal (GTX 1070 / 8 GB runs qwen3:8b at 74% GPU / 26% CPU split)
+- Docker and Docker Compose (NVIDIA Container Toolkit required for GPU pass-through)
 
 ---
 
@@ -151,11 +152,13 @@ User input (Telegram / Web UI / CLI)
       - normal mode: SOUL.md + AGENTS.md + USER.md
       - If skills registered: append Tool Usage rules (when to search, anti-hallucination rules)
   → route_model() selects model:
-      - model="deep" alias → DEEP_MODEL (qwen2.5:14b, 16K ctx)
-      - model="reasoning" alias → REASONING_MODEL (llama3.1:8b)
+      - model="deep" alias → DEEP_MODEL (qwen2.5:14b, 32K ctx)
+      - model="reasoning" alias → REASONING_MODEL (qwen3:8b)
+      - model="code" alias → CODING_MODEL (codegemma:latest)
       - model=<specific> → use as-is (client override)
-      - model=None + skills registered → TOOL_MODEL (qwen2.5:14b)
-      - model=None + no skills → keyword heuristic → REASONING_MODEL or DEFAULT_MODEL
+      - model=None + skills registered + coding keywords → CODING_MODEL
+      - model=None + skills registered → TOOL_MODEL (qwen3:8b)
+      - model=None + no skills → keyword heuristic → CODING_MODEL, REASONING_MODEL, or DEFAULT_MODEL
   → Load conversation history from Redis (per user_id)
   → Truncate history to HISTORY_TOKEN_BUDGET (skipped during bootstrap)
   → run_tool_loop() (Ollama tool-calling loop, up to MAX_TOOL_ITERATIONS):
@@ -187,18 +190,22 @@ User input (Telegram / Web UI / CLI)
 **Status: WORKING**
 
 - Official `ollama/ollama:latest` Docker image
+- GPU pass-through via NVIDIA Container Toolkit (`deploy.resources.reservations.devices`)
 - Models:
-  - `phi3:latest` (3.8B params, CPU-friendly) — default fast model
-  - `llama3.1:8b` (8B params) — reasoning model for complex tasks
-  - `qwen2.5:14b` (14B params) — tool calling model and deep/long-context tasks (TOOL_MODEL + DEEP_MODEL)
+  - `phi4-mini:latest` (3.8B params, 2.5 GB) — DEFAULT_MODEL for fast general tasks
+  - `qwen3:8b` (8B params, 5.2 GB on disk / ~10 GB loaded) — REASONING_MODEL + TOOL_MODEL; 74% GPU / 26% CPU on GTX 1070
+  - `qwen2.5:14b` (14B params, 9 GB) — DEEP_MODEL for long-context tasks (32K ctx)
+  - `codegemma:latest` (7B params, 5 GB) — CODING_MODEL for code/debug/implement tasks
+  - `nomic-embed-text` (274 MB) — embedding model for ChromaDB (OllamaEmbeddingFunction)
 - Persistent volume `ollama_data` at `/root/.ollama`
 - Healthcheck: `ollama list` every 30s
 - No host port exposed (internal only via `agent_net`)
 - **Note:** Models must be pulled manually: `docker exec ollama-runner ollama pull <model>`
+- **Version watcher:** heartbeat monitors `/api/version` and notifies via Telegram when Ollama updates (useful for tracking pre-release model support)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, skill framework with 9 skills: web_search + rag_search + rag_ingest + url_fetch + file_read + file_write + pdf_parse + remember + recall, Redis-backed rate limiting, three-layer persistent memory, and background heartbeat loop)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, skill framework with 9 skills: web_search + rag_search + rag_ingest + url_fetch + file_read + file_write + pdf_parse + remember + recall, Redis-backed rate limiting, three-layer persistent memory, background heartbeat loop with Ollama version watcher, multi-model routing with dedicated CODING_MODEL, OllamaEmbeddingFunction + nomic-embed-text embeddings, and 503 error handling for model failures)**
 
 The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, CLI-only gate on bootstrap mode, a modular skill framework supporting Ollama tool calling, and a background heartbeat loop for autonomous monitoring.
 
@@ -213,8 +220,8 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `skills/__init__.py` | Empty package marker |
 | `skills/base.py` | `SkillMetadata` dataclass + abstract `SkillBase` class with `validate()`, `execute()`, `sanitize_output()`, `to_ollama_tool()` concrete method |
 | `skills/registry.py` | `SkillRegistry` — register, get, all_skills, to_ollama_tools, `__len__`. Raises `ValueError` on duplicate name. |
-| `skills/rag_ingest.py` | `RagIngestSkill` — adds text to ChromaDB using `DefaultEmbeddingFunction`. Chunks at 800 chars (100 overlap). LOW risk, no approval, rate-limited (10/min). |
-| `skills/rag_search.py` | `RagSearchSkill` — ChromaDB vector search using `DefaultEmbeddingFunction`. LOW risk, no approval, rate-limited. Replaces old hardcoded "search docs" keyword hack. |
+| `skills/rag_ingest.py` | `RagIngestSkill` — adds text to ChromaDB using `OllamaEmbeddingFunction` (nomic-embed-text). Chunks at 800 chars (100 overlap). LOW risk, no approval, rate-limited (10/min). |
+| `skills/rag_search.py` | `RagSearchSkill` — ChromaDB vector search using `OllamaEmbeddingFunction` (nomic-embed-text). LOW risk, no approval, rate-limited. Replaces old hardcoded "search docs" keyword hack. |
 | `skills/web_search.py` | `WebSearchSkill` — Tavily REST API web search. LOW risk, no approval, rate-limited (3/turn). Strips HTML, `javascript:`, `data:`, and prompt injection phrases from results. API key via secret broker. |
 | `skills/url_fetch.py` | `UrlFetchSkill` — fetch URL, extract text via BeautifulSoup. SSRF prevention (blocks private IPs, Docker hostnames). Response size limit + content sanitization. LOW risk, no approval, rate-limited. |
 | `skills/file_read.py` | `FileReadSkill` — read file contents with zone enforcement via `os.path.realpath()`. No symlink escape. Blocks Zone 3+. LOW risk, no approval, rate-limited. |
@@ -224,7 +231,7 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `skills/recall.py` | `RecallSkill` — semantic search over `agent_memory` collection. Returns results with type + age labels. LOW risk, no approval, rate-limited (20/min). |
 | `memory.py` | `MemoryStore` — ChromaDB wrapper for `agent_memory` collection. Methods: `add()`, `search()`, `get_recent()`. Separate from `rag_data`; metadata schema: `{user_id, type, source, timestamp}`. |
 | `memory_sanitizer.py` | `sanitize(content)` — strips null bytes, control chars, HTML tags; detects 8 prompt-injection patterns (ordered: injection check BEFORE HTML strip). Raises `MemoryPoisonError(ValueError)` on detection. |
-| `heartbeat.py` | Background asyncio loop started via `@app.on_event("startup")`. Ticks every `HEARTBEAT_INTERVAL` seconds (default 60). Logs each tick via `tracing._emit`. Catches all exceptions to stay alive. |
+| `heartbeat.py` | Background asyncio loop started via `@app.on_event("startup")`. Ticks every `HEARTBEAT_INTERVAL` seconds (default 60). Logs each tick via `tracing._emit`. On each tick: polls `OLLAMA_HOST/api/version`, stores last-seen version in Redis (`heartbeat:ollama_version`); publishes upgrade notification to `notifications:agent` channel when version changes (includes pull command for `WATCH_MODEL`). Catches all exceptions to stay alive. |
 | `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval/heartbeat, enhanced sanitization, query helper for dashboard. `log_skill_call()` captures `skill_name`, `status`, `duration_ms`. |
 | `policy.yaml` | Zone rules, Redis-backed rate limits (including `rag_search`, `web_search`, `url_fetch`, `file_read`, `file_write`, `pdf_parse`, `remember`, `recall`), approval settings, denied URL patterns (mounted read-only) |
 | `policy.py` | Central policy engine: 4-zone model, hard-coded deny-list, rate limiting, access checks |
@@ -265,14 +272,17 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 }
 ```
 
-**Model routing (`route_model()` + TOOL_MODEL override):**
-- `model="deep"` → resolves to `DEEP_MODEL` (qwen2.5:14b with 16K context)
-- `model="reasoning"` → resolves to `REASONING_MODEL` (special alias)
+**Model routing (`route_model()` + skill override):**
+- `model="deep"` → resolves to `DEEP_MODEL` (qwen2.5:14b, 32K ctx)
+- `model="reasoning"` → resolves to `REASONING_MODEL` (qwen3:8b)
+- `model="code"` → resolves to `CODING_MODEL` (codegemma:latest)
 - `model=<any other value>` → used as-is (client override)
-- `model=null` (default) → auto-route based on message content, then override with `TOOL_MODEL` if skills are registered:
-  - If skills registered and `model=null`: always use `TOOL_MODEL` (qwen2.5:14b) — handles both tool calling and reasoning
-  - If no skills or explicit model provided: keyword heuristic picks `REASONING_MODEL` or `DEFAULT_MODEL`
-  - Reasoning keywords: `explain`, `analyze`, `plan`, `code`, `why`, `compare`, `debug`, `reason`, `think`, `step by step`, `how does`, `what if`
+- `model=null` (default) with skills registered → checked for coding keywords first, then defaults to TOOL_MODEL:
+  - Coding keywords match → `CODING_MODEL` (codegemma:latest, 32K ctx)
+  - No coding keywords → `TOOL_MODEL` (qwen3:8b)
+- `model=null` with no skills → keyword heuristic: coding keywords → `CODING_MODEL`; reasoning keywords → `REASONING_MODEL`; else → `DEFAULT_MODEL`
+- Coding keywords: `code`, `debug`, `implement`, `refactor`, `function`, `class`, `script`, `bug`, `fix`, `test`, `write a program/script/function/class/test`, `unit test`
+- Reasoning keywords: `explain`, `analyze`, `plan`, `why`, `compare`, `reason`, `think`, `step by step`, `how does`, `what if`
 
 **Current limitations:**
 - ~~**Stateless** - Every `/chat` call is independent. No conversation history.~~ FIXED (Chunk 2B): Redis-backed conversation memory with token-budget truncation.
@@ -298,13 +308,16 @@ Thin adapter that receives Telegram messages, forwards to agent-core, and replie
 | `requirements.txt` | python-telegram-bot, requests, redis |
 
 **Features:**
-- **Boot greeting** via `post_init` - sends a time-aware greeting message when the stack comes up (now includes "Policy Engine: Guardrails active")
+- **Boot greeting** via `post_init` - sends a time-aware greeting message when the stack comes up
 - **Chat ID filtering** - only responds to the owner's chat ID (set via `CHAT_ID` env var)
-- **Auto-routing** - does not send a model to agent-core, allowing server-side auto-routing (simple messages use phi3, complex questions escalate to llama3.1:8b)
-- **Typing indicator** - continuous "typing..." status while waiting for Ollama to respond
+- **Redis chat queue** - incoming messages are pushed to Redis list `queue:chat` rather than blocking the handler. Worker processes jobs one at a time via `asyncio.to_thread` (non-blocking event loop). Immediate acknowledgement sent to user: `"⏳ On it..."` or `"⏳ Model is busy, you're #N in queue"` based on current queue depth + active flag (`queue:chat:active`).
+- **Queue worker** (`_queue_worker`) - background asyncio task started in `post_init`. Pops jobs from queue, sets `queue:chat:active` flag, runs agent HTTP call in thread, cancels flag, sends response as reply to original message. Falls back to non-reply send if original message was deleted.
+- **Auto-routing** - does not send a model to agent-core, allowing server-side auto-routing
+- **Typing indicator** - refreshed every 4 seconds while worker processes a request (now correctly non-blocking via `asyncio.to_thread`)
 - **Message chunking** - splits long responses at line breaks/spaces to stay under Telegram's 4096 char limit
 - **Approval inline keyboards** (Chunk 3A) - subscribes to Redis `approvals:pending` channel, shows Approve/Deny buttons with risk-level emoji, writes resolution back to Redis hash
 - **Approval catch-up** - on startup, scans for any pending approvals missed during downtime and re-sends them
+- **Agent notifications** - subscribes to Redis `notifications:agent` channel and forwards messages to owner (used by heartbeat for Ollama version update alerts)
 - **No host ports** - outbound only to Telegram API + internal to agent-core + Redis
 
 **Environment variables (from `.env` and `docker-compose.yml`):**
@@ -327,7 +340,8 @@ REDIS_URL=redis://redis:6379       # For approval pub/sub (set in compose)
 - Runs via `chroma run --host 0.0.0.0 --port 8000`
 - Two collections:
   - `rag_data` — document knowledge base used by `rag_ingest` / `rag_search` skills and web UI
-  - `agent_memory` — agent's personal long-term memory used by `remember` / `recall` skills; scoped per `user_id`; both use `DefaultEmbeddingFunction` (all-MiniLM-L6-v2)
+  - `agent_memory` — agent's personal long-term memory used by `remember` / `recall` skills; scoped per `user_id`
+  - Both collections use `OllamaEmbeddingFunction` with `nomic-embed-text` (served by `ollama-runner`) — fully self-hosted, no external embedding API calls
 
 ### 3.5 web-ui
 
@@ -422,8 +436,8 @@ my-agent/
 │   │   ├── __init__.py         # Package marker
 │   │   ├── base.py             # SkillMetadata dataclass + abstract SkillBase class
 │   │   ├── registry.py         # SkillRegistry: register, get, to_ollama_tools, __len__
-│   │   ├── rag_ingest.py       # RagIngestSkill — add text to ChromaDB (DefaultEmbeddingFunction, chunked)
-│   │   ├── rag_search.py       # RagSearchSkill — ChromaDB vector search (DefaultEmbeddingFunction)
+│   │   ├── rag_ingest.py       # RagIngestSkill — add text to ChromaDB (OllamaEmbeddingFunction/nomic-embed-text, chunked)
+│   │   ├── rag_search.py       # RagSearchSkill — ChromaDB vector search (OllamaEmbeddingFunction/nomic-embed-text)
 │   │   ├── web_search.py       # WebSearchSkill — Tavily API, output sanitization, prompt injection guards
 │   │   ├── url_fetch.py        # UrlFetchSkill — HTTP fetch + HTML extraction, SSRF prevention
 │   │   ├── file_read.py        # FileReadSkill — zone-aware file read (no symlink escape, Zone 3+ denied)
@@ -462,7 +476,7 @@ my-agent/
 ├── telegram-gateway/
 │   ├── Dockerfile              # Python 3.12-slim
 │   ├── requirements.txt        # python-telegram-bot, requests, redis
-│   └── bot.py                  # Telegram bot: greeting, typing, chunking, approval callbacks
+│   └── bot.py                  # Telegram bot: Redis chat queue + background worker, immediate ack, greeting, typing, chunking, approval callbacks, agent notifications
 │
 ├── dashboard/
 │   ├── Dockerfile              # Python 3.12-slim, Streamlit on port 8502
@@ -518,7 +532,9 @@ my-agent/
 | 16 | ~~Rate limiting is in-memory only~~ | **Low** | `agent-core/policy.py` | The sliding window rate limiter reset on container restart. Fixed in Phase 4B: Redis-backed rate limiting with atomic `INCR`/`EXPIRE` — counters survive restarts and are shared across processes. | FIXED |
 | 17 | Web UI bypasses agent-core | **Medium** | `web-ui/app.py` | Web UI talks directly to Ollama via LangChain instead of routing through agent-core. Policy engine, rate limiting, tracing, and skills (web_search, rag_search) do not apply to web UI conversations. Deferred — will be addressed in a future phase. | DEFERRED |
 | 18 | Tool-calling model hallucination | **Medium** | `agent-core/skill_runner.py` | qwen2.5:14b sometimes calls web_search correctly but then ignores the results and invents an answer from training data (especially for sports/news). Mitigated with "base your answer ONLY on search results" instructions and auto-retry on refusal, but not fully solved at the model level. | OPEN — model limitation |
-| 19 | ~~RAG embedding mismatch~~ | **High** | `web-ui/app.py`, `skills/rag_search.py` | Web UI ingested via LangChain+OllamaEmbeddings; `rag_search` queried via ChromaDB's DefaultEmbeddingFunction — incompatible vector spaces causing silent search failures. Fixed: all paths now use `DefaultEmbeddingFunction` consistently. `rag_ingest` skill added so agent can populate its own knowledge base. | FIXED |
+| 19 | ~~RAG embedding mismatch~~ | **High** | `web-ui/app.py`, `skills/rag_search.py` | Web UI ingested via LangChain+OllamaEmbeddings; `rag_search` queried via ChromaDB's DefaultEmbeddingFunction — incompatible vector spaces causing silent search failures. Fixed: all paths now use `OllamaEmbeddingFunction` (nomic-embed-text) consistently. `rag_ingest` skill added so agent can populate its own knowledge base. | FIXED |
+| 20 | ~~Model OOM crash (500 error)~~ | **High** | `agent-core/app.py` | `qwen3:30b-a3b` (22.5 GB RAM) was set as TOOL_MODEL on a 15 GB system — Ollama threw an unhandled `ResponseError`, FastAPI returned 500. Fixed: (1) try/except around `run_tool_loop()` now returns HTTP 503 with a clear message; (2) TOOL_MODEL switched to `qwen3:8b` (5.2 GB) which fits. | FIXED |
+| 21 | ~~Blocking HTTP call in telegram event loop~~ | **Medium** | `telegram-gateway/bot.py` | `handle_message` called `requests.post` synchronously in an async handler — blocked the asyncio event loop, preventing the typing indicator from refreshing. Fixed: requests are now offloaded to `asyncio.to_thread` inside `_queue_worker`. | FIXED |
 
 ---
 
@@ -905,8 +921,8 @@ Skills that give the agent the ability to fetch URLs, read/write files, parse PD
 | Skill | Description | Risk Level | Approval | Key Security | Status |
 |---|---|---|---|---|---|
 | `web_search` | Search the web via Tavily API | Low | No | API key via secret broker, result sanitization, rate limited | ✅ Done (4A) |
-| `rag_search` | Query ChromaDB vector database | Low | No | `DefaultEmbeddingFunction`, result truncation, rate limited | ✅ Done (4A + patch) |
-| `rag_ingest` | Add text to ChromaDB knowledge base | Low | No | `DefaultEmbeddingFunction`, chunked (800/100), rate limited (10/min) | ✅ Done (pre-4B patch) |
+| `rag_search` | Query ChromaDB vector database | Low | No | `OllamaEmbeddingFunction` (nomic-embed-text), result truncation, rate limited | ✅ Done (4A + patch) |
+| `rag_ingest` | Add text to ChromaDB knowledge base | Low | No | `OllamaEmbeddingFunction` (nomic-embed-text), chunked (800/100), rate limited (10/min) | ✅ Done (pre-4B patch) |
 | `url_fetch` | Fetch and extract content from a URL | Low | No | SSRF prevention (block internal IPs/Docker network), denied URL patterns, response size limit, content sanitization | ✅ Done (4B) |
 | `file_read` | Read file contents | Low (sandbox), Medium (identity) | No | Path validation via `resolve_zone()`, no symlink escape, Zone 3+ denied | ✅ Done (4B) |
 | `file_write` | Write/create files | Low (sandbox), High (identity) | No (sandbox), Yes (identity) | Path validation, zone enforcement, identity writes require owner approval | ✅ Done (4B) |
@@ -947,7 +963,7 @@ Persistent long-term memory with a prompt-injection sanitization layer, working 
 
 **What was implemented:**
 
-- `agent-core/memory.py` — `MemoryStore`: ChromaDB `agent_memory` wrapper. `add(content, type, user_id)` returns memory_id. `search(query, user_id, n=5)` semantic search. `get_recent(user_id, n=8)` returns last 50 sorted by timestamp, top n. Uses `DefaultEmbeddingFunction` (consistent vector space with `rag_data`).
+- `agent-core/memory.py` — `MemoryStore`: ChromaDB `agent_memory` wrapper. `add(content, type, user_id)` returns memory_id. `search(query, user_id, n=5)` semantic search. `get_recent(user_id, n=8)` returns last 50 sorted by timestamp, top n. Uses `OllamaEmbeddingFunction` (nomic-embed-text, consistent vector space with `rag_data`). _(Originally implemented with `DefaultEmbeddingFunction`; upgraded post-4C to OllamaEmbeddingFunction for a fully self-hosted pipeline.)_
 - `agent-core/memory_sanitizer.py` — `sanitize(content)`: strips null bytes + control chars → checks 8 injection patterns (`ignore previous instructions`, `system prompt`, `disregard instructions`, `you are now`, `new instructions:`, `</?system`, `[INST]`, `<<SYS>>`) → strips HTML tags → collapses whitespace. Critical ordering: injection check BEFORE HTML strip (prevents `<<SYS>>` bypass). Raises `MemoryPoisonError(ValueError)` on detection.
 - `agent-core/heartbeat.py` — `heartbeat_loop(state)`: asyncio loop, `await asyncio.sleep(HEARTBEAT_INTERVAL)` then `_tick(state)`, catches all `Exception` (not `BaseException` — `CancelledError` propagates). `_tick()` emits heartbeat trace event. `start_heartbeat()` wraps loop in `asyncio.create_task()`.
 - `agent-core/skills/remember.py` — `RememberSkill`: params `content` (max 1000 chars), `type` (fact/observation/preference, default fact). `validate()` calls `sanitize()`, returns error on `MemoryPoisonError`. `execute()` pops `_user_id` from params (injected by skill_runner), calls `MemoryStore().add()`. LOW risk, no approval, rate-limited (15/min), max 5 calls/turn.
@@ -965,7 +981,7 @@ Persistent long-term memory with a prompt-injection sanitization layer, working 
 - **Total after 4C: 357 tests** (up from 305).
 
 **Key decisions made:**
-- ChromaDB collection `agent_memory` is completely separate from `rag_data` (different metadata schema, different purpose). Same `DefaultEmbeddingFunction` for compatible vector space.
+- ChromaDB collection `agent_memory` is completely separate from `rag_data` (different metadata schema, different purpose). Both use `OllamaEmbeddingFunction` (nomic-embed-text) for a compatible, fully self-hosted vector space.
 - Injection check runs BEFORE HTML stripping — critical to prevent `<<SYS>>` pattern from being mangled and bypassing detection.
 - `CancelledError` inherits from `BaseException` in Python 3.8+ — `except Exception` in heartbeat loop correctly lets task cancellation propagate.
 - Auto-summarise is fully fire-and-forget (`asyncio.create_task`) — never blocks a chat response, never crashes on failure.
@@ -1128,9 +1144,11 @@ The following capabilities are explicitly deferred:
 | Component | Technology | Version | Purpose |
 |---|---|---|---|
 | LLM Runtime | Ollama | latest | Local model inference |
-| Default Model | Phi-3 Mini | phi3:latest | 3.8B params, CPU-friendly, fast tasks |
-| Reasoning Model | Llama 3.1 | llama3.1:8b | 8B params, complex reasoning/planning |
-| Tool / Deep Model | Qwen 2.5 | qwen2.5:14b | 14B params, tool calling + deep/long-context tasks |
+| Default Model | Phi-4 Mini | phi4-mini:latest | 3.8B params, fast tasks |
+| Reasoning / Tool Model | Qwen 3 | qwen3:8b | 8B params, reasoning, tool calling (74% GPU / 26% CPU on GTX 1070) |
+| Coding Model | CodeGemma | codegemma:latest | 7B params, code/debug/implement tasks |
+| Deep Model | Qwen 2.5 | qwen2.5:14b | 14B params, long-context deep tasks (32K ctx) |
+| Embedding Model | nomic-embed-text | (via Ollama) | Served by ollama-runner; used by all ChromaDB paths via OllamaEmbeddingFunction |
 | Agent API | FastAPI | 0.115.0 | Central /chat endpoint |
 | ASGI Server | Uvicorn | 0.32.0 | Serves FastAPI |
 | Ollama Client | ollama-python | 0.3.3 | Python client for Ollama API |
@@ -1139,7 +1157,7 @@ The following capabilities are explicitly deferred:
 | Web UI | Streamlit | latest | Browser-based chat interface |
 | LLM Orchestration | LangChain | latest | Used in web UI for ChatOllama, embeddings, text splitting |
 | Vector DB | ChromaDB | latest | RAG document storage, chat persistence |
-| Embeddings Model | all-minilm | (via Ollama) | Used by web UI for RAG embeddings |
+| Embeddings Model | nomic-embed-text | (via Ollama) | Used by all ChromaDB paths (rag_ingest, rag_search, memory.py, web-ui) via OllamaEmbeddingFunction |
 | Cache/Memory | Redis | alpine | Conversation history (active) + job queue (planned) |
 | Container Runtime | Docker Compose | 3.8 | Service orchestration |
 | Language | Python | 3.12 | All custom services |
@@ -1160,14 +1178,18 @@ All secrets are stored in `.env` in the project root. **Never commit this file.*
 | `REDIS_PASSWORD` | redis, agent-core, telegram-gateway, dashboard | Redis server password. Used in `--requirepass` on the redis container and embedded in `REDIS_URL` for all clients. |
 | `REDIS_URL` | agent-core, telegram-gateway, dashboard | Redis connection string including password (`redis://:${REDIS_PASSWORD}@redis:6379`) |
 | `AGENT_API_KEY` | agent-core, telegram-gateway, web-ui | Shared API key required in the `X-Api-Key` header for `POST /chat` and `POST /approval/{id}/respond`. Generated with `secrets.token_urlsafe(32)`. |
-| `DEFAULT_MODEL` | agent-core | Default Ollama model for fast tasks (default `phi3:latest`) |
-| `REASONING_MODEL` | agent-core | Stronger Ollama model for planning/reasoning (default `llama3.1:8b`) |
+| `DEFAULT_MODEL` | agent-core | Default Ollama model for fast tasks (default `phi4-mini:latest`) |
+| `REASONING_MODEL` | agent-core | Stronger Ollama model for planning/reasoning (default `qwen3:8b`) |
+| `CODING_MODEL` | agent-core | Model used for coding tasks when coding keywords detected (default `codegemma:latest`). Use model alias `"code"` to force. |
 | `BOOTSTRAP_MODEL` | agent-core | Model used during bootstrap conversation (default `mistral:latest`) |
 | `DEEP_MODEL` | agent-core | Large-context model for complex tasks (default `qwen2.5:14b`) |
-| `DEEP_NUM_CTX` | agent-core | Context window size for deep model (default `16384`) |
-| `NUM_CTX` | agent-core | Context window size for standard models (default `8192`) |
+| `DEEP_NUM_CTX` | agent-core | Context window size for deep/coding models (default `32768`) |
+| `NUM_CTX` | agent-core | Context window size for standard models (default `32768`) |
 | `HISTORY_TOKEN_BUDGET` | agent-core | Max tokens for conversation history truncation (default `6000`) |
-| `TOOL_MODEL` | agent-core | Model used for tool calling when skills are registered (default `qwen2.5:14b`). Overrides auto-routing for all `model=null` requests. Must support Ollama's function-calling format. |
+| `TOOL_MODEL` | agent-core | Model used for tool calling when skills are registered (default `qwen3:8b`). Overrides auto-routing for `model=null` non-coding requests. |
+| `EMBED_MODEL` | agent-core, web-ui | Ollama model for embeddings via OllamaEmbeddingFunction (default `nomic-embed-text`). Must be pulled. |
+| `OLLAMA_HOST` | agent-core, web-ui | Ollama HTTP endpoint (default `http://ollama-runner:11434`). Used by OllamaEmbeddingFunction and heartbeat version check. |
+| `WATCH_MODEL` | agent-core (heartbeat) | Model tag to mention in Ollama update notifications (default `qwen3.5:35b-a3b`). Not pulled automatically. |
 | `MAX_TOOL_ITERATIONS` | agent-core | Hard cap on tool-call rounds per request before forcing a final answer (default `5`) |
 | `TAVILY_API_KEY` | secret broker → web_search skill | API key for Tavily web search. Get a free key at tavily.com. Set in `.env`; injected into agent-core via docker-compose. Never passed to the LLM. |
 | `HEARTBEAT_INTERVAL_SECONDS` | agent-core | Seconds between heartbeat ticks (default `60`). Set to `0` to disable. |

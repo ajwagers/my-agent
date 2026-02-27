@@ -447,7 +447,7 @@ class TestRagSearchSkill:
         mock_ef = MagicMock()
         mock_ef_class = MagicMock(return_value=mock_ef)
         mock_ef_module = MagicMock()
-        mock_ef_module.DefaultEmbeddingFunction = mock_ef_class
+        mock_ef_module.OllamaEmbeddingFunction = mock_ef_class
 
         with patch.dict(sys.modules, {
             "chromadb": mock_chroma_module,
@@ -465,7 +465,7 @@ class TestRagSearchSkill:
         mock_chroma_module = MagicMock()
         mock_chroma_module.HttpClient.side_effect = Exception("connection refused")
         mock_ef_module = MagicMock()
-        mock_ef_module.DefaultEmbeddingFunction = MagicMock()
+        mock_ef_module.OllamaEmbeddingFunction = MagicMock()
 
         with patch.dict(sys.modules, {
             "chromadb": mock_chroma_module,
@@ -553,7 +553,7 @@ class TestRagIngestSkill:
         mock_chroma_module.HttpClient.return_value = mock_instance
         mock_ef = MagicMock()
         mock_ef_module = MagicMock()
-        mock_ef_module.DefaultEmbeddingFunction = MagicMock(return_value=mock_ef)
+        mock_ef_module.OllamaEmbeddingFunction = MagicMock(return_value=mock_ef)
 
         with patch.dict(sys.modules, {
             "chromadb": mock_chroma_module,
@@ -576,7 +576,7 @@ class TestRagIngestSkill:
         mock_chroma_module = MagicMock()
         mock_chroma_module.HttpClient.return_value = mock_instance
         mock_ef_module = MagicMock()
-        mock_ef_module.DefaultEmbeddingFunction = MagicMock(return_value=MagicMock())
+        mock_ef_module.OllamaEmbeddingFunction = MagicMock(return_value=MagicMock())
 
         with patch.dict(sys.modules, {
             "chromadb": mock_chroma_module,
@@ -594,7 +594,7 @@ class TestRagIngestSkill:
         mock_chroma_module = MagicMock()
         mock_chroma_module.HttpClient.side_effect = Exception("connection refused")
         mock_ef_module = MagicMock()
-        mock_ef_module.DefaultEmbeddingFunction = MagicMock()
+        mock_ef_module.OllamaEmbeddingFunction = MagicMock()
 
         with patch.dict(sys.modules, {
             "chromadb": mock_chroma_module,

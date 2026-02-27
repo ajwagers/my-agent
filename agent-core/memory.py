@@ -38,9 +38,12 @@ class MemoryStore:
     def _get_collection(self):
         """Connect and return the ChromaDB collection (lazy, per-call)."""
         import chromadb
-        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+        from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 
-        ef = DefaultEmbeddingFunction()
+        ef = OllamaEmbeddingFunction(
+            url=os.getenv("OLLAMA_HOST", "http://ollama-runner:11434"),
+            model_name=os.getenv("EMBED_MODEL", "nomic-embed-text"),
+        )
         client = chromadb.HttpClient(host=self._host, port=self._port)
         return client.get_or_create_collection(
             self._collection_name, embedding_function=ef

@@ -30,8 +30,11 @@ MAX_TG_LEN = 4096  # Hard Telegram limit.
 
 RISK_EMOJI = {"low": "🟢", "medium": "🟡", "high": "🟠", "critical": "🔴"}
 
-
 CONTENT_PREVIEW_LIMIT = 500
+
+# Redis queue keys for serialising chat requests
+QUEUE_KEY = "queue:chat"
+QUEUE_ACTIVE_KEY = "queue:chat:active"
 
 
 def _build_approval_message(data: dict) -> tuple[str, InlineKeyboardMarkup]:
@@ -63,6 +66,33 @@ def _build_approval_message(data: dict) -> tuple[str, InlineKeyboardMarkup]:
         ]
     ])
     return text, keyboard
+
+
+async def _notification_subscriber(application):
+    """Subscribe to Redis notifications:agent channel and forward to owner."""
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe("notifications:agent")
+    logger.info("Notification subscriber started")
+
+    try:
+        while True:
+            msg = pubsub.get_message(timeout=0)
+            if msg and msg["type"] == "message":
+                try:
+                    data = json.loads(msg["data"])
+                    text = data.get("text", "")
+                    if text:
+                        await application.bot.send_message(
+                            chat_id=YOUR_CHAT_ID,
+                            text=text,
+                            parse_mode="Markdown",
+                        )
+                except Exception:
+                    logger.exception("Failed to process agent notification")
+            await asyncio.sleep(0.5)
+    except asyncio.CancelledError:
+        pubsub.close()
+        return
 
 
 async def _approval_subscriber(application):
@@ -180,7 +210,7 @@ async def post_init(application):
 🟢 **{greeting}, {title}!**
 
 **Agent Stack Online:**
-• Ollama: ✅ phi3:latest loaded
+• Ollama: ✅ phi4-mini loaded
 • CLI: ✅ `agent chat` ready
 • Telegram: ✅ Private responses
 • RAG: ✅ ChromaDB healthy (if enabled)
@@ -196,11 +226,68 @@ async def post_init(application):
     )
     logger.info(f"Sent {greeting} message to {title}")
 
-    # Start approval subscriber as background task
+    # Start background workers
     asyncio.create_task(_approval_subscriber(application))
+    asyncio.create_task(_notification_subscriber(application))
+    asyncio.create_task(_queue_worker(application))
 
     # Catch up on any pending approvals from before restart
     await _catch_up_pending(application)
+
+
+def _sync_call_agent(message: str, user_id: str) -> str:
+    """Blocking agent HTTP call — run via asyncio.to_thread so it doesn't block the event loop."""
+    try:
+        resp = requests.post(
+            f"{AGENT_URL}/chat",
+            json={"message": message, "user_id": user_id, "channel": "telegram"},
+            headers={"X-Api-Key": AGENT_API_KEY},
+            timeout=None,
+        )
+        resp.raise_for_status()
+        return resp.json()["response"]
+    except Exception as e:
+        logger.exception("Agent call failed")
+        return f"❌ Error: {e}"
+
+
+async def _queue_worker(application) -> None:
+    """Process chat jobs from Redis queue one at a time."""
+    logger.info("Queue worker started")
+    try:
+        while True:
+            raw = redis_client.rpop(QUEUE_KEY)
+            if raw is None:
+                await asyncio.sleep(0.5)
+                continue
+
+            job = json.loads(raw)
+            chat_id = job["chat_id"]
+            message_id = job.get("message_id")
+
+            redis_client.set(QUEUE_ACTIVE_KEY, "1", ex=600)
+            typing_task = asyncio.create_task(_typing_loop(chat_id, application.bot))
+            try:
+                reply_text = await asyncio.to_thread(
+                    _sync_call_agent, job["message"], job["user_id"]
+                )
+            finally:
+                typing_task.cancel()
+                redis_client.delete(QUEUE_ACTIVE_KEY)
+
+            for chunk in _split_message(reply_text, MAX_TG_LEN):
+                try:
+                    await application.bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                        reply_to_message_id=message_id,
+                    )
+                except Exception:
+                    # Fallback if original message was deleted
+                    await application.bot.send_message(chat_id=chat_id, text=chunk)
+
+    except asyncio.CancelledError:
+        return
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -213,42 +300,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = update.effective_chat.id
     user_message = update.message.text
 
-    # Continuous typing loop (runs ~2min max, safe)
-    typing_task = asyncio.create_task(_typing_loop(chat_id, context))
+    # Push job onto queue
+    redis_client.lpush(QUEUE_KEY, json.dumps({
+        "chat_id": chat_id,
+        "user_id": str(chat_id),
+        "message": user_message,
+        "message_id": update.message.message_id,
+    }))
 
-    try:
-        resp = requests.post(
-            f"{AGENT_URL}/chat",
-            json={
-                "message": user_message,
-                "user_id": str(chat_id),
-                "channel": "telegram",
-            },
-            headers={"X-Api-Key": AGENT_API_KEY},
-            timeout=None,
-        )
-        resp.raise_for_status()
-        reply_text = resp.json()["response"]
-    except requests.exceptions.Timeout:
-        reply_text = "❌ Agent timed out (took too long)."
-    except Exception as e:
-        logger.exception("Agent error")
-        reply_text = f"Error: {e}"
-    finally:
-        # Always stop typing and reply
-        typing_task.cancel()
-        
-    # Send in chunks instead of truncating
-    for chunk in _split_message(reply_text, MAX_TG_LEN):
-        await update.message.reply_text(chunk)
+    # Compute queue position: items waiting + 1 if a job is actively running
+    depth = redis_client.llen(QUEUE_KEY)
+    is_busy = bool(redis_client.exists(QUEUE_ACTIVE_KEY))
+    position = depth + (1 if is_busy else 0)
+
+    if position > 1:
+        ack = f"⏳ Got it — model is busy, you're #{position} in queue. I'll reply when ready."
+    else:
+        ack = "⏳ On it..."
+
+    await update.message.reply_text(ack)
 
 
-async def _typing_loop(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _typing_loop(chat_id: int, bot) -> None:
     """Keep typing status alive until cancelled."""
     try:
         while True:
-            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            await asyncio.sleep(4)  # < 5s so it stays continuous [web:52][web:56][web:59]
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            await asyncio.sleep(4)
     except asyncio.CancelledError:
         return
 

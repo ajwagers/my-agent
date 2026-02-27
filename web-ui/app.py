@@ -1,6 +1,6 @@
 import streamlit as st
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 import time
 import chromadb
 import json
@@ -117,7 +117,10 @@ def add_to_rag_database(text, source_name="manual input"):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_text(text)
 
-    ef = DefaultEmbeddingFunction()
+    ef = OllamaEmbeddingFunction(
+        url=os.getenv("OLLAMA_HOST", "http://ollama-runner:11434"),
+        model_name=os.getenv("EMBED_MODEL", "nomic-embed-text"),
+    )
     collection = chroma_client.get_or_create_collection("rag_data", embedding_function=ef)
     metadatas = [{"source": source_name} for _ in chunks]
     ids = [str(uuid.uuid4()) for _ in chunks]
@@ -177,8 +180,8 @@ def setup_sidebar():
         with st.expander("🤖 Model Routing", expanded=False):
             hint = st.selectbox(
                 "Routing hint",
-                ["auto (agent decides)", "reasoning", "deep"],
-                help="auto: agent-core picks the best model. reasoning: llama3.1:8b. deep: qwen2.5:14b with 16K context."
+                ["auto (agent decides)", "code", "reasoning", "deep"],
+                help="auto: agent-core picks the best model. code: qwen3-coder (coding tasks). reasoning: qwen3:8b. deep: qwen3:30b-a3b with 128K context."
             )
             st.session_state.model_hint = None if hint.startswith("auto") else hint
 

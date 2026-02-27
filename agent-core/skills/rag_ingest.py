@@ -1,9 +1,9 @@
 """
 RAG ingest skill — adds text to the local ChromaDB vector store.
 
-Uses ChromaDB's DefaultEmbeddingFunction (all-MiniLM-L6-v2 via sentence-transformers)
-to generate embeddings client-side. This is the same embedding path used by
-rag_search, ensuring query/document vector compatibility.
+Uses OllamaEmbeddingFunction (nomic-embed-text via Ollama) to generate embeddings.
+This is the same embedding path used by rag_search, ensuring query/document
+vector compatibility.
 """
 
 import uuid
@@ -84,9 +84,10 @@ class RagIngestSkill(SkillBase):
         return True, ""
 
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Chunk text and store in ChromaDB using DefaultEmbeddingFunction."""
+        """Chunk text and store in ChromaDB using OllamaEmbeddingFunction."""
+        import os
         import chromadb
-        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+        from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 
         text = params["text"]
         source = params.get("source", "agent")
@@ -95,7 +96,10 @@ class RagIngestSkill(SkillBase):
         metadatas = [{"source": source} for _ in chunks]
 
         try:
-            ef = DefaultEmbeddingFunction()
+            ef = OllamaEmbeddingFunction(
+                url=os.getenv("OLLAMA_HOST", "http://ollama-runner:11434"),
+                model_name=os.getenv("EMBED_MODEL", "nomic-embed-text"),
+            )
             client = chromadb.HttpClient(host=self.CHROMA_HOST, port=self.CHROMA_PORT)
             collection = client.get_or_create_collection(
                 self.COLLECTION_NAME, embedding_function=ef

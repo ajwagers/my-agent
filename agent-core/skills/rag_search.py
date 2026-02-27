@@ -62,8 +62,12 @@ class RagSearchSkill(SkillBase):
 
         query = params["query"]
         try:
-            from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
-            ef = DefaultEmbeddingFunction()
+            import os
+            from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
+            ef = OllamaEmbeddingFunction(
+                url=os.getenv("OLLAMA_HOST", "http://ollama-runner:11434"),
+                model_name=os.getenv("EMBED_MODEL", "nomic-embed-text"),
+            )
             chroma_client = chromadb.HttpClient(
                 host=self.CHROMA_HOST, port=self.CHROMA_PORT
             )

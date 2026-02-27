@@ -54,6 +54,7 @@ policy_engine = PolicyEngine(config_path="policy.yaml", redis_client=redis_clien
 approval_manager = ApprovalManager(redis_client=redis_client)
 app.state.policy_engine = policy_engine
 app.state.approval_manager = approval_manager
+app.state.redis_client = redis_client
 
 # Approval REST endpoints
 app.include_router(approval_router)
@@ -75,16 +76,22 @@ memory_store = MemoryStore()
 
 # Config
 HISTORY_TOKEN_BUDGET = int(os.getenv("HISTORY_TOKEN_BUDGET", "6000"))
-NUM_CTX = int(os.getenv("NUM_CTX", "8192"))
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "phi3:latest")
-REASONING_MODEL = os.getenv("REASONING_MODEL", "llama3.1:8b")
+NUM_CTX = int(os.getenv("NUM_CTX", "32768"))
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "phi4-mini:latest")
+REASONING_MODEL = os.getenv("REASONING_MODEL", "qwen3:8b")
 DEEP_MODEL = os.getenv("DEEP_MODEL", "qwen2.5:14b")
-DEEP_NUM_CTX = int(os.getenv("DEEP_NUM_CTX", "16384"))
+DEEP_NUM_CTX = int(os.getenv("DEEP_NUM_CTX", "32768"))
+CODING_MODEL = os.getenv("CODING_MODEL", "codegemma:latest")
 REASONING_KEYWORDS = [
-    "explain", "analyze", "plan", "code", "why", "compare",
-    "debug", "reason", "think", "step by step", "how does", "what if",
+    "explain", "analyze", "plan", "why", "compare",
+    "reason", "think", "step by step", "how does", "what if",
 ]
-TOOL_MODEL = os.getenv("TOOL_MODEL", "llama3.1:8b")
+CODING_KEYWORDS = [
+    "code", "debug", "implement", "refactor", "function", "class",
+    "script", "bug", "fix", "test", "write a program", "write a script",
+    "write a function", "write a class", "write a test", "unit test",
+]
+TOOL_MODEL = os.getenv("TOOL_MODEL", "qwen3:8b")
 MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
 
 def estimate_tokens(text):
@@ -172,14 +179,23 @@ class ChatRequest(BaseModel):
     history: list = None  # Optional: client-provided conversation history
 
 def route_model(message, requested_model):
-    """Pick the right model: client override, 'deep'/'reasoning' alias, or auto-route."""
+    """Pick the right model: client override, alias, or keyword auto-route.
+
+    Aliases: 'deep' → DEEP_MODEL, 'reasoning' → REASONING_MODEL, 'code' → CODING_MODEL.
+    Auto-route checks coding keywords first (more specific), then reasoning keywords.
+    """
     if requested_model == "deep":
         return DEEP_MODEL
     if requested_model == "reasoning":
         return REASONING_MODEL
+    if requested_model == "code":
+        return CODING_MODEL
     if requested_model is not None:
         return requested_model
     lower = message.lower()
+    for kw in CODING_KEYWORDS:
+        if kw in lower:
+            return CODING_MODEL
     for kw in REASONING_KEYWORDS:
         if kw in lower:
             return REASONING_MODEL
@@ -287,30 +303,39 @@ preferences about the user."""
     # Route to the appropriate model
     model = route_model(request.message, request.model)
     # When skills are available and the client did not request a specific model,
-    # override to TOOL_MODEL which is fine-tuned for tool/function calling.
+    # override to CODING_MODEL for coding tasks or TOOL_MODEL for everything else.
     if len(skill_registry) > 0 and request.model is None:
-        model = TOOL_MODEL
+        lower = request.message.lower()
+        if any(kw in lower for kw in CODING_KEYWORDS):
+            model = CODING_MODEL
+        else:
+            model = TOOL_MODEL
 
     tracing.log_chat_request(
         request.message, model=model, bootstrap=in_bootstrap,
     )
 
     # Run through tool loop (handles both tool-calling and plain chat)
-    ctx = DEEP_NUM_CTX if model == DEEP_MODEL else NUM_CTX
+    ctx = DEEP_NUM_CTX if model in (DEEP_MODEL, CODING_MODEL) else NUM_CTX
     tools = skill_registry.to_ollama_tools() or None
-    assistant_content, updated_messages, tool_stats = await run_tool_loop(
-        ollama_client=ollama_client,
-        messages=ollama_messages,
-        tools=tools,
-        model=model,
-        ctx=ctx,
-        skill_registry=skill_registry,
-        policy_engine=policy_engine,
-        approval_manager=approval_manager,
-        auto_approve=request.auto_approve,
-        user_id=user_id,
-        max_iterations=MAX_TOOL_ITERATIONS,
-    )
+    try:
+        assistant_content, updated_messages, tool_stats = await run_tool_loop(
+            ollama_client=ollama_client,
+            messages=ollama_messages,
+            tools=tools,
+            model=model,
+            ctx=ctx,
+            skill_registry=skill_registry,
+            policy_engine=policy_engine,
+            approval_manager=approval_manager,
+            auto_approve=request.auto_approve,
+            user_id=user_id,
+            max_iterations=MAX_TOOL_ITERATIONS,
+        )
+    except Exception as e:
+        err_msg = str(e)
+        tracing._emit("chat", {"status": "error", "model": model, "error": err_msg})
+        raise HTTPException(status_code=503, detail=f"Model error ({model}): {err_msg}")
 
     # Ollama per-request metrics are not available from a multi-turn tool loop;
     # per-skill timing is captured via log_skill_call inside execute_skill.

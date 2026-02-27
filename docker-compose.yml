@@ -38,13 +38,17 @@ services:
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - AGENT_API_KEY=${AGENT_API_KEY}
-      - DEFAULT_MODEL=phi3:latest
-      - REASONING_MODEL=llama3.1:8b
+      - DEFAULT_MODEL=phi4-mini:latest
+      - REASONING_MODEL=qwen3:8b
       - BOOTSTRAP_MODEL=mistral:latest
       - DEEP_MODEL=qwen2.5:14b
-      - DEEP_NUM_CTX=16384
-      - NUM_CTX=8192
-      - TOOL_MODEL=qwen2.5:14b
+      - DEEP_NUM_CTX=32768
+      - NUM_CTX=32768
+      - TOOL_MODEL=qwen3:8b
+      - CODING_MODEL=codegemma:latest
+      - EMBED_MODEL=nomic-embed-text
+      - OLLAMA_HOST=http://ollama-runner:11434
+      - WATCH_MODEL=qwen3.5:35b-a3b
       - MAX_TOOL_ITERATIONS=5
       - TAVILY_API_KEY=${TAVILY_API_KEY}
     volumes:
@@ -106,8 +110,10 @@ services:
       - AGENT_URL=http://agent-core:8000
       - AGENT_API_KEY=${AGENT_API_KEY}
       - CHROMA_URL=http://chroma-rag:8000
+      - OLLAMA_HOST=http://ollama-runner:11434
+      - EMBED_MODEL=nomic-embed-text
       - BOOTSTRAP_MODEL=mistral:latest
-      - NUM_CTX=8192
+      - NUM_CTX=32768
     restart: 
         unless-stopped
 
