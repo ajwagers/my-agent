@@ -15,8 +15,9 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-# Phrases that indicate the model refused to use tools due to perceived lack
-# of real-time access. Detected to trigger a one-shot retry nudge.
+# Phrases that indicate the model explicitly refused tool use due to perceived
+# lack of real-time access. Kept as a fallback for cases where the user message
+# doesn't contain real-time signals but the model still refuses.
 _REFUSAL_PATTERN = re.compile(
     r"don.t have real.time"
     r"|real.time capabilities"
@@ -28,7 +29,30 @@ _REFUSAL_PATTERN = re.compile(
     r"|no internet access"
     r"|not able to browse"
     r"|cannot browse"
-    r"|don.t have access to current",
+    r"|don.t have access to current"
+    r"|web.scrap"
+    r"|cannot fetch"
+    r"|can.t fetch"
+    r"|unable to fetch"
+    r"|api access"
+    r"|cannot.*external"
+    r"|unable to access",
+    re.IGNORECASE,
+)
+
+# Keywords in the *user's* message that indicate real-time data is likely needed.
+# Checking the input is more robust than matching the model's refusal phrasing —
+# the nudge fires whether the model explicitly refuses, silently answers from
+# training data, or uses any phrasing not listed in _REFUSAL_PATTERN.
+_REALTIME_SIGNAL = re.compile(
+    r"current|latest|recent|today|tonight|right now|live|"
+    r"weather|forecast|temperature|"
+    r"price|stock|crypto|bitcoin|"
+    r"score|result|standings|match|game|"
+    r"news|breaking|headline|"
+    r"scrape|crawl|fetch.+url|"
+    r"search for|look up|find out|check if|"
+    r"who won|what happened|is .{1,30} open|when does",
     re.IGNORECASE,
 )
 
@@ -223,9 +247,17 @@ async def run_tool_loop(
         if not tool_calls:
             text = msg.get("content", "")
 
-            # Auto-retry: if the model refused to use tools on its first attempt
-            # due to perceived lack of real-time access, nudge it once.
-            if iteration == 0 and not skills_called and _REFUSAL_PATTERN.search(text):
+            # Auto-retry: nudge the model once if it skipped tools on its first
+            # pass and either (a) explicitly refused in its response text, or
+            # (b) the user's message contained real-time signals suggesting a
+            # tool should have been used.  Checking the input avoids brittleness
+            # from enumerating every possible refusal phrasing.
+            last_user_msg = next(
+                (m.get("content", "") for m in reversed(messages) if m["role"] == "user"),
+                "",
+            )
+            should_nudge = _REFUSAL_PATTERN.search(text) or _REALTIME_SIGNAL.search(last_user_msg)
+            if iteration == 0 and not skills_called and should_nudge:
                 messages = messages + [
                     {"role": "assistant", "content": text},
                     {"role": "user", "content": _RETRY_NUDGE},

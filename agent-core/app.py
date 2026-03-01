@@ -5,6 +5,7 @@ from ollama import Client
 import asyncio
 import os
 import json
+import re
 import time
 import redis
 from datetime import datetime, timezone
@@ -178,6 +179,85 @@ class ChatRequest(BaseModel):
     auto_approve: bool = False
     history: list = None  # Optional: client-provided conversation history
 
+# ---------------------------------------------------------------------------
+# Per-request tool-forcing signals
+#
+# Checked against the user's message BEFORE the first LLM call.  When a
+# signal matches, a hard directive is appended to the system prompt so the
+# model is told explicitly which tool to call — rather than relying solely
+# on the general tool-usage guidance or post-hoc nudging.
+#
+# Keep patterns specific enough to avoid false positives on casual phrasing.
+# ---------------------------------------------------------------------------
+
+_SIGNAL_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+
+_SIGNAL_REALTIME = re.compile(
+    r"current|latest|recent|today|tonight|right now|live\b|"
+    r"weather|forecast|temperature|"
+    r"price|stock|crypto|bitcoin|"
+    r"score|result|standings|match\b|game\b|"
+    r"news|breaking|headline|"
+    r"scrape|crawl\b|"
+    r"search for|look up|find out|check if|"
+    r"who won|what happened|is .{1,30} open|when does",
+    re.IGNORECASE,
+)
+
+_SIGNAL_RECALL = re.compile(
+    r"do you remember|you(?:'ve| have) (?:stored|saved|remembered)|"
+    r"what did i (?:say|tell you|mention)|"
+    r"my (?:name|preference|email|phone|address|location)\b|"
+    r"from (?:last|our previous|a previous) (?:session|conversation|time)|"
+    r"have i (?:told|mentioned|said)",
+    re.IGNORECASE,
+)
+
+_SIGNAL_FILE = re.compile(r"/sandbox/\S+|/agent/\S+|/app/\S+", re.IGNORECASE)
+
+
+def _tool_forcing_directive(message: str) -> str:
+    """Return a system-prompt suffix that forces the right tool(s) for this
+    request, or an empty string if no signals are detected.
+
+    Injected at the END of the system prompt so it acts as a per-request
+    override on top of the general tool-usage guidance.
+    """
+    directives = []
+
+    if _SIGNAL_URL.search(message):
+        directives.append(
+            "The user's message contains a URL. You **must** call `url_fetch` "
+            "on that URL to retrieve its actual content before responding. "
+            "Do not guess or describe it from training data."
+        )
+
+    if _SIGNAL_REALTIME.search(message):
+        directives.append(
+            "This question requires current information. You **must** call "
+            "`web_search` before answering. Do not answer from training data."
+        )
+
+    if _SIGNAL_RECALL.search(message):
+        directives.append(
+            "The user may be referencing something from a previous conversation. "
+            "You **must** call `recall` to check long-term memory before answering."
+        )
+
+    if _SIGNAL_FILE.search(message):
+        directives.append(
+            "The user's message references a file path. You **must** call "
+            "`file_read` on that path before responding. "
+            "Do not guess the file contents."
+        )
+
+    if not directives:
+        return ""
+
+    lines = "\n".join(f"- {d}" for d in directives)
+    return f"\n\n## Required Actions for This Request\n{lines}"
+
+
 def route_model(message, requested_model):
     """Pick the right model: client override, alias, or keyword auto-route.
 
@@ -275,6 +355,14 @@ more specific query rather than guessing.
 the user that should persist across sessions.
 - Use **recall** to search long-term memory for previously stored facts or \
 preferences about the user."""
+
+        # Append a per-request forcing directive when the message contains
+        # clear signals that a specific tool should be used.  This runs AFTER
+        # the general guidance so it reads as an explicit override.
+        forcing = _tool_forcing_directive(request.message)
+        if forcing:
+            system_prompt += forcing
+
     in_bootstrap = identity_module.is_bootstrap_mode()
 
     # Bootstrap is CLI-only — lock out Telegram, web-ui, and any remote caller.
