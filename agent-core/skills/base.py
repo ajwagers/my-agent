@@ -10,9 +10,13 @@ Evolved from skill_contract.SkillBase. Key differences:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from policy import RiskLevel
+
+# Channels that are considered private / owner-only.
+# Skills with private_channels set will only execute on these channels.
+PRIVATE_CHANNELS: FrozenSet[str] = frozenset({"telegram", "cli", "mumble_owner"})
 
 
 @dataclass
@@ -24,6 +28,9 @@ class SkillMetadata:
     requires_approval: bool
     parameters: Dict              # JSON Schema: {"type":"object","properties":{...},"required":[...]}
     max_calls_per_turn: int = 5   # max times this skill fires in a single tool loop turn
+    private_channels: FrozenSet[str] = field(default_factory=frozenset)
+    # When non-empty, this skill may only run if the current channel is in the set.
+    # Leave empty (default) to allow execution on all channels.
 
 
 class SkillBase(ABC):
@@ -59,6 +66,10 @@ class SkillBase(ABC):
         Truncate to a safe length.
         """
         ...
+
+    async def pre_approval_description(self, params: Dict[str, Any]) -> Optional[str]:
+        """Return a custom approval request description, or None to use the default."""
+        return None
 
     # -----------------------------------------------------------------------
     # Concrete helpers — derived from metadata, no need to override

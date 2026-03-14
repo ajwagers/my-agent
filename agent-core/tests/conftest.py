@@ -16,13 +16,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 class FakeRedis:
-    """In-memory mock of redis-py, supporting hash ops, list ops, sorted-set ops, and pub/sub."""
+    """In-memory mock of redis-py, supporting hash ops, list ops, sorted-set ops, set ops, and pub/sub."""
 
     def __init__(self):
         self._data: Dict[str, Any] = {}
         self._hashes: Dict[str, Dict[str, str]] = {}
         self._lists: Dict[str, List[str]] = {}
         self._zsets: Dict[str, Dict[str, float]] = {}
+        self._sets: Dict[str, set] = {}
         self._subscribers: Dict[str, List] = {}
         self._lock = threading.Lock()
 
@@ -30,8 +31,15 @@ class FakeRedis:
     def get(self, key: str) -> Optional[str]:
         return self._data.get(key)
 
-    def set(self, key: str, value: str, **kwargs) -> None:
+    def set(self, key: str, value: str, ex: int = None, nx: bool = False, **kwargs):
+        """Set a string key. Supports nx=True (set if not exists) and ex= (ignored in tests)."""
+        if nx:
+            if key in self._data:
+                return None  # NX failed — key already exists
+            self._data[key] = value
+            return True
         self._data[key] = value
+        return True
 
     def delete(self, *keys: str) -> None:
         for k in keys:
@@ -39,6 +47,7 @@ class FakeRedis:
             self._hashes.pop(k, None)
             self._lists.pop(k, None)
             self._zsets.pop(k, None)
+            self._sets.pop(k, None)
 
     # -- Hash ops --
     def hset(self, name: str, mapping: Optional[Dict] = None, **kwargs) -> None:
@@ -90,10 +99,38 @@ class FakeRedis:
     def pubsub(self) -> "FakePubSub":
         return FakePubSub(self)
 
+    # -- Set ops --
+    def sadd(self, name: str, *values: str) -> int:
+        if name not in self._sets:
+            self._sets[name] = set()
+        added = 0
+        for v in values:
+            if v not in self._sets[name]:
+                self._sets[name].add(v)
+                added += 1
+        return added
+
+    def smembers(self, name: str) -> set:
+        return set(self._sets.get(name, set()))
+
+    def srem(self, name: str, *values: str) -> int:
+        s = self._sets.get(name, set())
+        removed = 0
+        for v in values:
+            if v in s:
+                s.discard(v)
+                removed += 1
+        return removed
+
     # -- Key scanning --
     def keys(self, pattern: str = "*") -> List[str]:
         import fnmatch
-        all_keys = list(self._data.keys()) + list(self._hashes.keys()) + list(self._lists.keys())
+        all_keys = (
+            list(self._data.keys())
+            + list(self._hashes.keys())
+            + list(self._lists.keys())
+            + list(self._sets.keys())
+        )
         return [k for k in all_keys if fnmatch.fnmatch(k, pattern)]
 
     def expire(self, name: str, seconds: int) -> None:
@@ -121,6 +158,11 @@ class FakeRedis:
                 del zset[m]
                 removed += 1
         return removed
+
+    def zrangebyscore(self, name: str, min_score: float, max_score: float) -> List[str]:
+        zset = self._zsets.get(name, {})
+        return [m for m, score in sorted(zset.items(), key=lambda x: x[1])
+                if min_score <= score <= max_score]
 
     def zremrangebyscore(self, name: str, min_score: float, max_score: float) -> int:
         zset = self._zsets.get(name, {})

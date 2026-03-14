@@ -1,14 +1,14 @@
 # My-Agent: Product Requirements Document
 
-> **Last Updated:** 2026-02-26
+> **Last Updated:** 2026-03-13
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Model & embedding upgrades (post-4C): phi4-mini replaces phi3 as DEFAULT_MODEL; qwen3:8b replaces llama3.1:8b as REASONING_MODEL and TOOL_MODEL; dedicated CODING_MODEL (qwen3:8b, consolidated from codegemma) with separate coding keyword routing; OllamaEmbeddingFunction + nomic-embed-text replaces DefaultEmbeddingFunction across all ChromaDB paths; heartbeat extended with Ollama version watcher (notifies via Telegram when Ollama updates); Telegram gateway upgraded with Redis chat queue + background worker (immediate ack, sequential processing, asyncio-safe blocking calls); 503 error handling for model-level failures. Next up: Phase 4D (math, physics, media skills).
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Model & embedding upgrades (post-4C): phi4-mini replaces phi3 as DEFAULT_MODEL; qwen3:8b replaces llama3.1:8b as REASONING_MODEL and TOOL_MODEL; dedicated CODING_MODEL (qwen3:8b, consolidated from codegemma) with separate coding keyword routing; OllamaEmbeddingFunction + nomic-embed-text replaces DefaultEmbeddingFunction across all ChromaDB paths; heartbeat extended with Ollama version watcher (notifies via Telegram when Ollama updates); Telegram gateway upgraded with Redis chat queue + background worker (immediate ack, sequential processing, asyncio-safe blocking calls); 503 error handling for model-level failures. Phase 4C-Part-2 complete: Redis-backed job queue with `create_task`/`list_tasks`/`cancel_task` skills, heartbeat wired to job executor, REST job endpoints, Redis SET NX lock prevents concurrent execution. Phase 4D complete: `calculate` (AST-based safe expression evaluator) and `convert_units` (pint-backed unit converter) skills added; tool-forcing signals for math and unit queries; 467 tests total. Post-4D patch: `web_search` upgraded — Brave Search API added as primary backend (LLM Context endpoint for general queries, standard web search for URL-containing queries); Tavily retained as automatic fallback; 471 tests total. Phase 4E complete: `python_exec` (sandboxed subprocess with two-agent safety review), `calendar_read`, `calendar_write` (Outlook via MS Graph + Proton via CalDAV), `calendar_auth` (MSAL device code flow) skills added; 524 tests total. Phase 5 complete: Mumble voice/text gateway — mumble-bot container with VAD (webrtcvad), STT (faster-whisper small/CPU/int8), TTS (Piper en_US-lessac-medium), Redis queue, approval relay, notification relay; 30 new tests. Phase 5 polish (post-5 patch): TTS markdown stripping (`_strip_for_speech`), voice-concise system prompt for mumble channel, PTT-flush VAD worker, `think=False` for qwen3:8b tool dispatch (requires ollama≥0.4.7), broadened `_REALTIME_SIGNAL`/`_REFUSAL_PATTERN` to catch political/leadership queries and confident-stale answers, search result trust hardening in system prompt, full migration from sync `ollama.Client` to `AsyncClient` (eliminates connection-pool hangs in background summarisation tasks). Next up: Phase 6 (proactive autonomy / scheduled agentic tasks) or hardware upgrade to unlock larger models.
 
 ---
 
 ## 1. Project Overview
 
-**My-Agent** is a self-hosted, multi-interface AI agent stack running entirely on local hardware via Docker. It wraps locally-hosted LLMs (Ollama with phi4-mini for fast tasks, qwen3:8b for reasoning, tool calling, and coding tasks, and qwen2.5:14b for deep/long-context tasks) behind a central FastAPI service, with multiple frontends (CLI, Telegram bot, Streamlit web UI) and optional RAG via ChromaDB. The agent can search the web in real time via the Tavily API and query uploaded documents via ChromaDB. Embeddings use nomic-embed-text via OllamaEmbeddingFunction for a fully self-hosted vector pipeline.
+**My-Agent** is a self-hosted, multi-interface AI agent stack running entirely on local hardware via Docker. It wraps locally-hosted LLMs (Ollama with phi4-mini for fast tasks, qwen3:8b for reasoning, tool calling, and coding tasks, and qwen2.5:14b for deep/long-context tasks) behind a central FastAPI service, with multiple frontends (CLI, Telegram bot, Streamlit web UI) and optional RAG via ChromaDB. The agent can search the web in real time via Brave Search (primary) or Tavily (fallback) and query uploaded documents via ChromaDB. Embeddings use nomic-embed-text via OllamaEmbeddingFunction for a fully self-hosted vector pipeline.
 
 The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a local-first, action-oriented AI agent that runs on your own machine, connects to your chat apps, and can eventually execute real tasks with persistent memory.
 
@@ -205,7 +205,7 @@ User input (Telegram / Web UI / CLI)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, skill framework with 9 skills: web_search + rag_search + rag_ingest + url_fetch + file_read + file_write + pdf_parse + remember + recall, Redis-backed rate limiting, three-layer persistent memory, background heartbeat loop with Ollama version watcher, multi-model routing with dedicated CODING_MODEL, OllamaEmbeddingFunction + nomic-embed-text embeddings, and 503 error handling for model failures)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, skill framework with 13 skills: web_search + rag_search + rag_ingest + url_fetch + file_read + file_write + pdf_parse + remember + recall + create_task + list_tasks + cancel_task + calculate + convert_units, Redis-backed rate limiting, three-layer persistent memory, background heartbeat loop with Ollama version watcher, Redis-backed job queue, multi-model routing with dedicated CODING_MODEL, OllamaEmbeddingFunction + nomic-embed-text embeddings, tool-forcing signals, and 503 error handling for model failures)**
 
 The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, CLI-only gate on bootstrap mode, a modular skill framework supporting Ollama tool calling, and a background heartbeat loop for autonomous monitoring.
 
@@ -222,13 +222,18 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `skills/registry.py` | `SkillRegistry` — register, get, all_skills, to_ollama_tools, `__len__`. Raises `ValueError` on duplicate name. |
 | `skills/rag_ingest.py` | `RagIngestSkill` — adds text to ChromaDB using `OllamaEmbeddingFunction` (nomic-embed-text). Chunks at 800 chars (100 overlap). LOW risk, no approval, rate-limited (10/min). |
 | `skills/rag_search.py` | `RagSearchSkill` — ChromaDB vector search using `OllamaEmbeddingFunction` (nomic-embed-text). LOW risk, no approval, rate-limited. Replaces old hardcoded "search docs" keyword hack. |
-| `skills/web_search.py` | `WebSearchSkill` — Tavily REST API web search. LOW risk, no approval, rate-limited (3/turn). Strips HTML, `javascript:`, `data:`, and prompt injection phrases from results. API key via secret broker. |
+| `skills/web_search.py` | `WebSearchSkill` — Brave Search primary (LLM Context for general queries, standard web search for URL-containing queries), Tavily fallback. LOW risk, no approval, rate-limited (3/turn). Strips HTML, `javascript:`, `data:`, and prompt injection phrases from results. API keys via secret broker. |
 | `skills/url_fetch.py` | `UrlFetchSkill` — fetch URL, extract text via BeautifulSoup. SSRF prevention (blocks private IPs, Docker hostnames). Response size limit + content sanitization. LOW risk, no approval, rate-limited. |
 | `skills/file_read.py` | `FileReadSkill` — read file contents with zone enforcement via `os.path.realpath()`. No symlink escape. Blocks Zone 3+. LOW risk, no approval, rate-limited. |
 | `skills/file_write.py` | `FileWriteSkill` — write files with zone enforcement. Zone 1 (sandbox): auto-allowed. Zone 2 (identity): requires owner approval. Zone 3+: denied. Rate-limited. |
 | `skills/pdf_parse.py` | `PdfParseSkill` — extract text from PDFs in `/sandbox` using `pypdf`. Output truncated to 4000 chars. LOW risk, no approval, rate-limited. |
 | `skills/remember.py` | `RememberSkill` — store facts/observations to ChromaDB `agent_memory` collection. Sanitizes content before storage (injection detection). LOW risk, no approval, rate-limited (15/min). |
 | `skills/recall.py` | `RecallSkill` — semantic search over `agent_memory` collection. Returns results with type + age labels. LOW risk, no approval, rate-limited (20/min). |
+| `skills/create_task.py` | `CreateTaskSkill` — schedule a one-shot, scheduled, or recurring job in the Redis job queue. Validates cron expressions and datetime strings. LOW risk, no approval, rate-limited (5/min). |
+| `skills/list_tasks.py` | `ListTasksSkill` — list all scheduled jobs for the current user from the Redis job queue. LOW risk, no approval, rate-limited (20/min). |
+| `skills/cancel_task.py` | `CancelTaskSkill` — cancel a job by ID. Removes from Redis job queue. LOW risk, no approval, rate-limited (10/min). |
+| `skills/calculate.py` | `CalculateSkill` — safe AST-based expression evaluator. Whitelists 7 binary ops, 2 unary ops, 4 constants (pi/e/tau/inf), and 20 math functions. No `eval()`. Returns `{"result": value}` or `{"error": ...}`. LOW risk, no approval, rate-limited (50/min), max 5 calls/turn. |
+| `skills/convert_units.py` | `ConvertUnitsSkill` — pint-backed unit converter. Handles length, mass, temperature, speed, volume, and all other pint-supported units. Typed error handling for incompatible dimensions, unknown units, and temperature offset calculus. LOW risk, no approval, rate-limited (50/min), max 5 calls/turn. |
 | `memory.py` | `MemoryStore` — ChromaDB wrapper for `agent_memory` collection. Methods: `add()`, `search()`, `get_recent()`. Separate from `rag_data`; metadata schema: `{user_id, type, source, timestamp}`. |
 | `memory_sanitizer.py` | `sanitize(content)` — strips null bytes, control chars, HTML tags; detects 8 prompt-injection patterns (ordered: injection check BEFORE HTML strip). Raises `MemoryPoisonError(ValueError)` on detection. |
 | `heartbeat.py` | Background asyncio loop started via `@app.on_event("startup")`. Ticks every `HEARTBEAT_INTERVAL` seconds (default 60). Logs each tick via `tracing._emit`. On each tick: polls `OLLAMA_HOST/api/version`, stores last-seen version in Redis (`heartbeat:ollama_version`); publishes upgrade notification to `notifications:agent` channel when version changes (includes pull command for `WATCH_MODEL`). Catches all exceptions to stay alive. |
@@ -242,10 +247,11 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `skill_contract.py` | Abstract `SkillBase` class (legacy stub, superseded by `skills/base.py`) |
 | `agent` | Shell wrapper (`#!/bin/bash`) so `agent chat "msg"` works on PATH |
 | `Dockerfile` | Python 3.12, installs deps, copies CLI to `/usr/local/bin/agent` |
-| `requirements.txt` | fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml |
-| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills, memory, heartbeat), runnable without Docker — **357 tests total** |
+| `requirements.txt` | fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml, pypdf, beautifulsoup4, pint |
+| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills, memory, heartbeat, jobs), runnable without Docker — **471 tests total** |
 | `tests/test_memory.py` | 21 tests: `TestMemorySanitizer` (injection detection, HTML strip, control chars) + `TestMemoryStore` (add, search, get_recent, error propagation), all using sys.modules mocking. |
 | `tests/test_heartbeat.py` | 4 tests: tick invokes tracing, exception caught (loop continues), returns asyncio.Task, cancellation raises CancelledError. |
+| `tests/test_jobs.py` | Tests for job queue, create_task/list_tasks/cancel_task skills, job executor in heartbeat, and job REST endpoints. |
 
 **API Endpoints:**
 
@@ -438,15 +444,22 @@ my-agent/
 │   │   ├── registry.py         # SkillRegistry: register, get, to_ollama_tools, __len__
 │   │   ├── rag_ingest.py       # RagIngestSkill — add text to ChromaDB (OllamaEmbeddingFunction/nomic-embed-text, chunked)
 │   │   ├── rag_search.py       # RagSearchSkill — ChromaDB vector search (OllamaEmbeddingFunction/nomic-embed-text)
-│   │   ├── web_search.py       # WebSearchSkill — Tavily API, output sanitization, prompt injection guards
+│   │   ├── web_search.py       # WebSearchSkill — Brave Search primary (LLM Context/web), Tavily fallback, output sanitization, prompt injection guards
 │   │   ├── url_fetch.py        # UrlFetchSkill — HTTP fetch + HTML extraction, SSRF prevention
 │   │   ├── file_read.py        # FileReadSkill — zone-aware file read (no symlink escape, Zone 3+ denied)
 │   │   ├── file_write.py       # FileWriteSkill — zone-aware file write (sandbox: auto; identity: approval; system: deny)
 │   │   ├── pdf_parse.py        # PdfParseSkill — extract text from PDFs in /sandbox via pypdf
 │   │   ├── remember.py         # RememberSkill — store facts to agent_memory (sanitized, rate-limited 15/min)
-│   │   └── recall.py           # RecallSkill — semantic search over agent_memory (rate-limited 20/min)
+│   │   ├── recall.py           # RecallSkill — semantic search over agent_memory (rate-limited 20/min)
+│   │   ├── create_task.py      # CreateTaskSkill — schedule one-shot/scheduled/recurring jobs in Redis queue
+│   │   ├── list_tasks.py       # ListTasksSkill — list scheduled jobs for current user
+│   │   ├── cancel_task.py      # CancelTaskSkill — cancel a job by ID
+│   │   ├── calculate.py        # CalculateSkill — AST-based safe math evaluator (no eval(), whitelisted functions)
+│   │   └── convert_units.py    # ConvertUnitsSkill — pint unit converter (length, mass, temp, speed, volume, etc.)
+│   ├── job_manager.py          # JobManager — Redis-backed job queue (CRUD, due-job query, lock management)
+│   ├── job_endpoints.py        # REST router: GET /jobs, GET /jobs/{id}, DELETE /jobs/{id}
 │   ├── tracing.py              # Structured JSON tracing: context vars, event emitters, Redis log storage
-│   ├── policy.yaml             # Zone rules, Redis-backed rate limits (all 9 skills), approval config (read-only mount)
+│   ├── policy.yaml             # Zone rules, Redis-backed rate limits (all 13 skills), approval config (read-only mount)
 │   ├── policy.py               # Central policy engine (zones, deny-list, rate limits)
 │   ├── approval.py             # Approval gate manager (Redis hash + pub/sub + proposed_content + tracing hooks)
 │   ├── approval_endpoints.py   # REST router: /approval/pending, /{id}, /{id}/respond
@@ -462,9 +475,10 @@ my-agent/
 │       ├── test_identity.py    # Identity loader tests: bootstrap detection, file loading, prompt building
 │       ├── test_bootstrap.py   # Bootstrap parser tests: proposal extraction, validation, completion, approval integration
 │       ├── test_tracing.py     # 55 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization
-│       ├── test_skills.py      # 133 tests: SkillBase, SkillRegistry, execute_skill pipeline, all 9 skills, SecretBroker, run_tool_loop
+│       ├── test_skills.py      # 207 tests: SkillBase, SkillRegistry, execute_skill pipeline, all 13 skills, SecretBroker, run_tool_loop
 │       ├── test_memory.py      # 21 tests: MemorySanitizer (injection detection, HTML, control chars) + MemoryStore (add, search, get_recent)
-│       └── test_heartbeat.py   # 4 tests: tick→tracing, exception caught, returns Task, cancellation propagates
+│       ├── test_heartbeat.py   # 4 tests: tick→tracing, exception caught, returns Task, cancellation propagates
+│       └── test_jobs.py        # Tests for job queue, task skills, job executor in heartbeat, REST endpoints
 │
 │
 ├── agent-identity/             # Bind-mounted to /agent in container (Zone 2)
@@ -501,10 +515,12 @@ my-agent/
 ├── SETUP_GUIDE_2.md            # Policy engine, guardrails & identity bootstrap setup guide
 ├── SETUP_GUIDE_3.md            # Observability & structured tracing setup guide
 ├── SETUP_GUIDE_4.md            # Persistent memory, heartbeat & recall setup guide (Phase 4C)
+├── SETUP_GUIDE_5.md            # Calculator & unit conversion skills setup guide (Phase 4D)
 ├── VIDEO_OUTLINE.md            # YouTube video 1 outline (foundation stack)
 ├── VIDEO_OUTLINE_2.md          # YouTube video 2 outline (guardrails + identity/bootstrap)
 ├── VIDEO_OUTLINE_3.md          # YouTube video 3 outline (observability + tracing)
 ├── VIDEO_OUTLINE_4.md          # YouTube video 4 outline (persistent memory + heartbeat)
+├── VIDEO_OUTLINE_5.md          # YouTube video 5 outline (calculator + unit conversion + jobs)
 └── PRD.md                      # This document
 ```
 
@@ -773,7 +789,7 @@ Openclaw users run a strong reasoning model for planning and a cheaper/faster mo
 >
 > **Why this comes before everything else:** Openclaw's approach is to add capabilities first and bolt on safety later. We invert that completely. Chunk 3A was the first thing built — before the soul file, before the bootstrap conversation, before any skill. The guardrail framework exists before the agent gets its personality. Chunk 2A (Soul/Bootstrap) is the first consumer of the policy engine.
 >
-> **Current status:** 3A (Policy Engine), 3B (Observability & Tracing), and 3C (Health Dashboard) are complete. 3D (Container Hardening) and 3E (Multi-Tenant) are deferred. Phase 4A (skill framework), 4B (files/URL/PDF + Redis rate limiting), and 4C (memory + heartbeat) are all complete. Next up: Phase 4C-Part-2 (job queue + scheduled tasks) or Phase 4D (math/physics/media skills).
+> **Current status:** 3A (Policy Engine), 3B (Observability & Tracing), and 3C (Health Dashboard) are complete. 3D (Container Hardening) and 3E (Multi-Tenant) are deferred. Phase 4A (skill framework), 4B (files/URL/PDF + Redis rate limiting), 4C (memory + heartbeat), 4C-Part-2 (job queue + scheduled tasks), and 4D (calculate + convert_units) are all complete. Next up: Phase 4E (execution & voice) or Phase 5 (autonomy & planning).
 
 #### Chunk 3A: Policy Engine & Guardrails ✅
 
@@ -889,7 +905,7 @@ A dedicated Streamlit dashboard (separate service on port 8502) showing the oper
 - `agent-core/skills/registry.py` — `SkillRegistry` with `register()`, `get()`, `all_skills()`, `to_ollama_tools()`, `__len__()`. Raises `ValueError` on duplicate name. Callers use `registry.to_ollama_tools() or None` (empty list vs. None matters for Ollama).
 - `agent-core/secret_broker.py` — `get(key)` reads env var at call time. Raises `RuntimeError` if unset/empty. No caching. LLM never sees returned values.
 - `agent-core/skills/rag_search.py` — `RagSearchSkill`: ChromaDB `HttpClient` query, LOW risk, no approval, rate-limited (`rag_search` key in policy.yaml, 20/min). `sanitize_output()` joins docs, truncates at 2000 chars. Replaces hardcoded "search docs" keyword check.
-- `agent-core/skills/web_search.py` — `WebSearchSkill`: Tavily REST API, LOW risk, no approval, max 3 calls/turn. `sanitize_output()` strips HTML tags, `javascript:`, `data:` URIs, and prompt injection phrases (`ignore previous`, `system prompt`, `disregard instructions`) from results. Each snippet capped at 1000 chars. API key via secret broker.
+- `agent-core/skills/web_search.py` — `WebSearchSkill`: Brave Search primary (Brave LLM Context endpoint for general queries; standard web search when query contains a URL), Tavily automatic fallback on any Brave failure. LOW risk, no approval, max 3 calls/turn. All three backends normalised to `{"_source", "items": [{"title", "url", "text"}]}`. `sanitize_output()` strips HTML tags, `javascript:`, `data:` URIs, and prompt injection phrases from results. Total output capped at 5000 chars; per-item cap 1000 chars (standard/Tavily) or dynamic (LLM Context). API keys via secret broker.
 - `agent-core/skill_runner.py` — Two public async functions:
   - `execute_skill()`: rate-limit → validate → approval gate → execute (timed) → sanitize_output → log_skill_call. Never raises — all errors returned as strings.
   - `run_tool_loop()`: Ollama tool-calling loop with per-skill call limits, auto-retry when model refuses to use tools (detects phrases like "don't have real-time access", injects nudge message, retries once). Returns `(final_text, updated_messages, stats)`.
@@ -921,7 +937,7 @@ Skills that give the agent the ability to fetch URLs, read/write files, parse PD
 
 | Skill | Description | Risk Level | Approval | Key Security | Status |
 |---|---|---|---|---|---|
-| `web_search` | Search the web via Tavily API | Low | No | API key via secret broker, result sanitization, rate limited | ✅ Done (4A) |
+| `web_search` | Search the web via Brave Search (primary) + Tavily (fallback) | Low | No | API keys via secret broker, result sanitization, prompt injection guards, rate limited | ✅ Done (4A, upgraded post-4D) |
 | `rag_search` | Query ChromaDB vector database | Low | No | `OllamaEmbeddingFunction` (nomic-embed-text), result truncation, rate limited | ✅ Done (4A + patch) |
 | `rag_ingest` | Add text to ChromaDB knowledge base | Low | No | `OllamaEmbeddingFunction` (nomic-embed-text), chunked (800/100), rate limited (10/min) | ✅ Done (pre-4B patch) |
 | `url_fetch` | Fetch and extract content from a URL | Low | No | SSRF prevention (block internal IPs/Docker network), denied URL patterns, response size limit, content sanitization | ✅ Done (4B) |
@@ -999,20 +1015,60 @@ Persistent long-term memory with a prompt-injection sanitization layer, working 
 
 ---
 
-#### Chunk 4D: Math, Physics & Media
+#### Chunk 4C-Part-2: Jobs & Scheduled Tasks ✅
 
-**Priority: MEDIUM**
+**Status: COMPLETE**
 
-| Skill | Description | Risk Level | Notes |
-|---|---|---|---|
-| `calculator` | Evaluate mathematical expressions safely | Low | Pure Python `eval()` alternative (e.g., `ast.literal_eval` or `sympy`). No shell. No arbitrary code execution. |
-| `physics` | Unit conversions + physics knowledge | Low | Pure Python unit conversion library (e.g., `pint`). Optionally integrate Wolfram Alpha API for knowledge queries (API key via secret broker). No physics simulation — just conversions and factual knowledge. |
-| `image_gen` | Generate images from text prompts | Medium | **ON HOLD** until GTX 1070 8GB GDDR5 arrives and is installed. Will likely use Stable Diffusion via a local inference container. Output saved to `/sandbox`. |
+Redis-backed job queue with LLM-callable skills for scheduling and managing recurring tasks. The heartbeat loop is wired to the job executor.
 
-**Test criteria:**
-- Calculator correctly evaluates expressions without arbitrary code execution
-- Physics skill converts units accurately (e.g., "5 miles to km", "100 Fahrenheit to Celsius")
-- Physics knowledge queries return accurate factual answers
+**What was implemented:**
+- `agent-core/job_manager.py` — `JobManager`: Redis-backed CRUD for jobs. Job types: one-shot, scheduled (ISO datetime), recurring (cron-style). `get_due_jobs()` returns jobs past their `next_run` time. `SET NX` lock prevents concurrent execution of the same job across ticks.
+- `agent-core/job_endpoints.py` — FastAPI router: `GET /jobs` (list all), `GET /jobs/{id}` (inspect), `DELETE /jobs/{id}` (cancel). All require API key.
+- `agent-core/skills/create_task.py` — `CreateTaskSkill`: schedule a job with title, type, and optional schedule/cron. Returns job ID and next_run. Rate-limited (5/min).
+- `agent-core/skills/list_tasks.py` — `ListTasksSkill`: list all jobs for the current user. Formatted output with status and next_run. Rate-limited (20/min).
+- `agent-core/skills/cancel_task.py` — `CancelTaskSkill`: cancel a job by ID. Returns confirmation. Rate-limited (10/min).
+- `agent-core/heartbeat.py` — Extended `_tick()`: queries `job_manager.get_due_jobs()`, runs each through `run_tool_loop()` (with the job's stored message and the agent's own identity), updates `next_run` for recurring jobs, marks one-shots as complete.
+- `agent-core/policy.yaml` — Added `create_task` (5/min), `list_tasks` (20/min), `cancel_task` (10/min) rate limits.
+- `agent-core/tests/test_jobs.py` — Tests for job lifecycle (create, list, cancel, execute), heartbeat integration, REST endpoints.
+- **Total after 4C-Part-2: 424 tests.**
+
+**Full details:** See `SETUP_GUIDE_4.md` (Phase 4C section) and `VIDEO_OUTLINE_4.md`.
+
+---
+
+#### Chunk 4D: Math, Physics & Media ✅ (partial)
+
+**Status: COMPLETE (calculator + unit conversion; image_gen deferred)**
+
+The agent is now a reliable calculator. It never guesses arithmetic or unit conversions from training data — it always uses the `calculate` and `convert_units` tools. Tool-forcing signals detect math and unit queries and inject hard directives into the system prompt before the first LLM call.
+
+**What was implemented:**
+
+- `agent-core/skills/calculate.py` — `CalculateSkill`: AST-based safe expression evaluator. `ast.parse(expr, mode='eval')` + recursive `_safe_eval()` with strict whitelists:
+  - **Binary ops:** Add, Sub, Mul, Div, Pow, Mod, FloorDiv
+  - **Unary ops:** UAdd, USub
+  - **Constants (Name nodes):** `pi`, `e`, `tau`, `inf` (from `math`)
+  - **Functions (Call nodes):** `sqrt sin cos tan asin acos atan atan2 log log10 log2 exp abs ceil floor factorial degrees radians hypot round gcd`
+  - All other AST node types raise `ValueError("Expression type not allowed: ...")`. No `eval()`. No imports reachable from the expression.
+  - Pre-parse validation rejects `__`, `import`, `exec`, `eval`, `open`, `lambda` before AST parse.
+  - Edge case: `math.isfinite()` called inside `try/except OverflowError` — `factorial(10000)` returns a Python arbitrary-precision integer that overflows on float conversion.
+  - LOW risk, no approval, rate-limited (50/min), max 5 calls/turn.
+
+- `agent-core/skills/convert_units.py` — `ConvertUnitsSkill`: pint-backed unit converter. Creates a `pint.UnitRegistry()` per call, converts `Quantity(value, from_unit).to(to_unit)`. Typed error handling:
+  - `DimensionalityError` → "Cannot convert X to Y (incompatible dimensions)"
+  - `UndefinedUnitError` → "Unknown unit: 'X'"
+  - `OffsetUnitCalculusError` → "Use 'degC', 'degF', 'kelvin' for temperature conversions"
+  - LOW risk, no approval, rate-limited (50/min), max 5 calls/turn.
+
+- `agent-core/requirements.txt` — Added `pint`.
+- `agent-core/policy.yaml` — Added `calculate` (50/min) and `convert_units` (50/min) rate limits.
+- `agent-core/app.py` — Registered both skills. Extended tool-usage hint with two new rules. Added two tool-forcing signal patterns (`_SIGNAL_CALCULATE`, `_SIGNAL_CONVERT`) with corresponding directives in `_tool_forcing_directive()`.
+- `agent-core/tests/test_skills.py` — Appended `TestCalculateSkill` (20 tests) + `TestConvertUnitsSkill` (18 tests → 38 tests) + edge case fixes. **Total: 467 tests.** Post-4D patch: `TestWebSearchSkill` fully replaced (17 new tests for Brave LLM Context, Brave web, Tavily fallback, both-fail error — replaces 10 old Tavily-only tests). **Total: 471 tests.**
+
+**Deferred:**
+- `image_gen` — Stable Diffusion on hold pending GPU upgrade (current GTX 1070 8GB is fully utilized by qwen3:8b; need 24GB VRAM for a capable image model alongside the LLM stack).
+
+**Full details:** See `SETUP_GUIDE_5.md` and `VIDEO_OUTLINE_5.md`.
 
 ---
 
@@ -1192,7 +1248,8 @@ All secrets are stored in `.env` in the project root. **Never commit this file.*
 | `OLLAMA_HOST` | agent-core, web-ui | Ollama HTTP endpoint (default `http://ollama-runner:11434`). Used by OllamaEmbeddingFunction and heartbeat version check. |
 | `WATCH_MODEL` | agent-core (heartbeat) | Model tag to mention in Ollama update notifications (default `qwen3.5:35b-a3b`). Not pulled automatically. |
 | `MAX_TOOL_ITERATIONS` | agent-core | Hard cap on tool-call rounds per request before forcing a final answer (default `5`) |
-| `TAVILY_API_KEY` | secret broker → web_search skill | API key for Tavily web search. Get a free key at tavily.com. Set in `.env`; injected into agent-core via docker-compose. Never passed to the LLM. |
+| `BRAVE_SEARCH_API_KEY` | secret broker → web_search skill | API key for Brave Search (primary backend). Get a key at brave.com/search/api. Free tier includes $5/month credit (~1000 queries). Set in `.env`; injected via docker-compose. Never passed to the LLM. |
+| `TAVILY_API_KEY` | secret broker → web_search skill | API key for Tavily web search (fallback when Brave fails). Get a free key at tavily.com. Set in `.env`; injected into agent-core via docker-compose. Never passed to the LLM. |
 | `HEARTBEAT_INTERVAL_SECONDS` | agent-core | Seconds between heartbeat ticks (default `60`). Set to `0` to disable. |
 
 ---

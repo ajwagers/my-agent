@@ -36,7 +36,18 @@ _REFUSAL_PATTERN = re.compile(
     r"|unable to fetch"
     r"|api access"
     r"|cannot.*external"
-    r"|unable to access",
+    r"|unable to access"
+    # Patterns for models that answer confidently from stale training data
+    # without explicitly refusing — e.g. qwen3 saying it was "developed prior
+    # to April 2023" or referring to "my last update".
+    r"|developed prior to"
+    r"|prior to \w+ 20\d\d"
+    r"|as of my (training|knowledge|last)"
+    r"|my (training|knowledge) (cutoff|through|until|ends)"
+    r"|after my (last|latest) update"
+    r"|last updated? (in |on )?\w* ?20\d\d"
+    r"|information.*(?:through|until|up to).*20\d\d"
+    r"|I (?:was|am) (?:an AI|a language model).{0,60}(?:20\d\d|cutoff|training)",
     re.IGNORECASE,
 )
 
@@ -52,7 +63,15 @@ _REALTIME_SIGNAL = re.compile(
     r"news|breaking|headline|"
     r"scrape|crawl|fetch.+url|"
     r"search for|look up|find out|check if|"
-    r"who won|what happened|is .{1,30} open|when does",
+    r"who won|what happened|is .{1,30} open|when does|"
+    # Current office-holders, leadership, status questions
+    r"who is (?:the |a )?(?:current )?(?:president|prime minister|ceo|head|"
+    r"leader|governor|mayor|secretary|director|chancellor|king|queen|pope)|"
+    r"who (?:leads|runs|heads|controls|governs|commands)\b|"
+    r"who is in (?:charge|office|power)\b|"
+    r"what is the (?:current |latest )?(?:status|state|situation|rate|level)\b|"
+    r"is .{1,40} still\b|"
+    r"has .{1,40} (?:changed|updated|happened)\b",
     re.IGNORECASE,
 )
 
@@ -75,10 +94,12 @@ async def execute_skill(
     approval_manager: ApprovalManager,
     auto_approve: bool,
     user_id: str,
+    channel: str = "",
 ) -> str:
     """Run a skill through the full policy pipeline.
 
     Pipeline:
+      0. Channel privacy gate (blocks personal-data skills on non-private channels)
       1. Rate-limit check
       2. Parameter validation
       3. Approval gate (if skill.requires_approval and not auto_approve)
@@ -93,6 +114,14 @@ async def execute_skill(
     skill_name = skill.metadata.name
     status = "error"
     duration_ms: float = 0.0
+
+    # 0. Channel privacy gate — hard block before any data is fetched
+    if skill.metadata.private_channels and channel not in skill.metadata.private_channels:
+        allowed = ", ".join(sorted(skill.metadata.private_channels))
+        return (
+            f"[{skill_name}] Personal data is only accessible on private channels "
+            f"({allowed}). This request cannot be fulfilled on '{channel or 'unknown'}'."
+        )
 
     # 1. Rate limit
     if not policy_engine.check_rate_limit(skill.metadata.rate_limit):
@@ -120,11 +149,15 @@ async def execute_skill(
     # 3. Approval gate
     if skill.requires_approval and not auto_approve:
         try:
+            description = f"Execute skill '{skill_name}' for user {user_id}"
+            custom = await skill.pre_approval_description(params)
+            if custom:
+                description = custom
             approval_id = approval_manager.create_request(
                 action=f"skill:{skill_name}",
                 zone="external",
                 risk_level=skill.metadata.risk_level.value,
-                description=f"Execute skill '{skill_name}' for user {user_id}",
+                description=description,
                 target=skill_name,
             )
             resolution = await approval_manager.wait_for_resolution(approval_id)
@@ -184,6 +217,7 @@ async def execute_skill(
     return sanitized
 
 
+
 async def run_tool_loop(
     ollama_client: Any,
     messages: List[Dict],
@@ -196,36 +230,45 @@ async def run_tool_loop(
     auto_approve: bool,
     user_id: str,
     max_iterations: int,
+    channel: str = "",
 ) -> Tuple[str, List[Dict], Dict]:
     """Drive the Ollama tool-calling loop.
 
-    Args:
-        ollama_client:    Ollama client instance (ollama.Client or compatible).
-        messages:         Conversation history in Ollama format.
-        tools:            List of tool dicts (from registry.to_ollama_tools())
-                          or None to skip tool calling entirely.
-        model:            Ollama model name to use.
-        ctx:              num_ctx option value.
-        skill_registry:   Registry to look up skills by name.
-        policy_engine:    For rate-limit checks inside execute_skill.
-        approval_manager: For approval gates inside execute_skill.
-        auto_approve:     Whether to skip approval gates.
-        user_id:          User identifier for approval requests.
-        max_iterations:   Hard cap on tool-call rounds before forcing a final answer.
+    Single-model loop: `model` handles dispatch, tool calls, and synthesis.
+    On the first iteration, if the model produces no tool calls and the user
+    message contains real-time signals (or the model explicitly refuses to
+    search), one nudge is injected and the loop retries.
 
     Returns:
         (final_text, updated_messages, stats) where:
           final_text       — the model's last text response
           updated_messages — messages list with all tool turns appended
-                             (use for Ollama context; do NOT save to Redis history)
           stats            — {"iterations": int, "skills_called": List[str]}
     """
     options = {"num_ctx": ctx}
 
-    # No tools — plain chat, no loop needed
+    def _msg_content(msg) -> str:
+        """Extract text content from a Message object or dict."""
+        if isinstance(msg, dict):
+            return msg.get("content", "") or ""
+        return msg.content or ""
+
+    def _msg_to_dict(msg) -> Dict:
+        """Convert an ollama Message object to a plain dict for the messages list."""
+        if isinstance(msg, dict):
+            return msg
+        d: Dict = {"role": msg.role, "content": msg.content or ""}
+        if msg.tool_calls:
+            d["tool_calls"] = [
+                {"function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ]
+        return d
+
+    # No tools — straight to model, no loop needed
     if not tools:
-        response = ollama_client.chat(model=model, messages=messages, options=options)
-        text = response["message"].get("content", "")
+        response = await ollama_client.chat(model=model, messages=messages, options=options)
+        text = _msg_content(response.message)
         messages = messages + [{"role": "assistant", "content": text}]
         return text, messages, {"iterations": 0, "skills_called": []}
 
@@ -234,24 +277,22 @@ async def run_tool_loop(
     iteration = 0
 
     while iteration < max_iterations:
-        response = ollama_client.chat(
+        response = await ollama_client.chat(
             model=model,
             messages=messages,
             tools=tools,
             options=options,
+            think=False,
         )
-        msg = response["message"]
-        tool_calls = msg.get("tool_calls") or []
+        msg = response.message
+        tool_calls = msg.tool_calls or []
 
-        # No tool calls — model produced its final text answer
+        # ── No tool calls proposed ──────────────────────────────────────────
         if not tool_calls:
-            text = msg.get("content", "")
+            text = _msg_content(msg)
 
-            # Auto-retry: nudge the model once if it skipped tools on its first
-            # pass and either (a) explicitly refused in its response text, or
-            # (b) the user's message contained real-time signals suggesting a
-            # tool should have been used.  Checking the input avoids brittleness
-            # from enumerating every possible refusal phrasing.
+            # Nudge once on the first pass if real-time signals or explicit
+            # refusal phrasing detected and no skills have run yet.
             last_user_msg = next(
                 (m.get("content", "") for m in reversed(messages) if m["role"] == "user"),
                 "",
@@ -268,17 +309,14 @@ async def run_tool_loop(
             messages = messages + [{"role": "assistant", "content": text}]
             return text, messages, {"iterations": iteration, "skills_called": skills_called}
 
-        # Append the assistant message (which contains tool_calls).
-        # Always include role so downstream callers can filter by role reliably.
-        messages = messages + [{**msg, "role": "assistant"}]
+        # ── Execute tool calls ───────────────────────────────────────────────
+        messages = messages + [_msg_to_dict(msg)]
 
-        # Execute each requested tool call
         for tool_call in tool_calls:
-            fn = tool_call.get("function", {})
-            name = fn.get("name", "")
-            raw_args = fn.get("arguments", {})
+            fn = tool_call.function
+            name = fn.name
+            raw_args = fn.arguments
 
-            # arguments may arrive as a JSON string or already a dict
             if isinstance(raw_args, str):
                 try:
                     params = json.loads(raw_args)
@@ -308,21 +346,22 @@ async def run_tool_loop(
                         approval_manager=approval_manager,
                         auto_approve=auto_approve,
                         user_id=user_id,
+                        channel=channel,
                     )
 
             messages = messages + [{"role": "tool", "content": tool_result}]
 
         iteration += 1
 
-    # Max iterations reached — ask the model for a final answer with what it has
+    # Max iterations reached — synthesis model produces the final answer
     messages = messages + [
         {
             "role": "user",
             "content": "Please provide your final answer based on the information gathered so far.",
         }
     ]
-    response = ollama_client.chat(model=model, messages=messages, options=options)
-    text = response["message"].get("content", "")
+    response = await ollama_client.chat(model=model, messages=messages, options=options)
+    text = _msg_content(response.message)
     messages = messages + [{"role": "assistant", "content": text}]
     return (
         f"[max iterations reached]\n{text}",

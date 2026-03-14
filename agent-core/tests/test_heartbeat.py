@@ -15,7 +15,14 @@ class TestHeartbeat:
     async def test_tick_invokes_tracing(self):
         """_tick() emits a heartbeat event to tracing."""
         from heartbeat import _tick
-        with patch("heartbeat.tracing") as mock_tracing:
+        # Patch _check_ollama_version and _process_due_jobs so only the tick
+        # emit is relevant — this keeps the test focused and network-independent.
+        async def noop(state):
+            pass
+
+        with patch("heartbeat.tracing") as mock_tracing, \
+             patch("heartbeat._check_ollama_version", noop), \
+             patch("heartbeat._process_due_jobs", noop):
             await _tick(MagicMock())
         mock_tracing._emit.assert_called_once()
         event_type = mock_tracing._emit.call_args[0][0]

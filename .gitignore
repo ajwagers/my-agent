@@ -4,6 +4,12 @@
 # Identity files (personal to each deployment — use .template files)
 agent-identity/*.md
 
+# OAuth token caches — never commit live tokens
+agent-identity/*.bin
+
+# External projects with their own repos
+openclaw-main/
+
 # Python
 __pycache__/
 *.pyc

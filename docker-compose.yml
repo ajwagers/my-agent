@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   ollama-runner:
     image: ollama/ollama:latest
@@ -23,6 +21,41 @@ services:
     restart:
         unless-stopped
 
+  postgres-brain:
+    image: pgvector/pgvector:pg16
+    container_name: postgres-brain
+    networks:
+      - agent_net
+    environment:
+      - POSTGRES_DB=brain
+      - POSTGRES_USER=brain
+      - POSTGRES_PASSWORD=${BRAIN_POSTGRES_PASSWORD}
+    volumes:
+      - brain_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  open-brain-mcp:
+    build: ./open-brain-mcp
+    container_name: open-brain-mcp
+    networks:
+      - agent_net
+    depends_on:
+      postgres-brain:
+        condition: service_started
+      ollama-runner:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://brain:${BRAIN_POSTGRES_PASSWORD}@postgres-brain:5432/brain
+      - OLLAMA_HOST=http://ollama-runner:11434
+      - EMBED_MODEL=nomic-embed-text
+      - LLM_MODEL=qwen3:8b
+      - MS_GRAPH_CLIENT_ID=${MS_GRAPH_CLIENT_ID}
+    volumes:
+      - ./agent-identity:/agent:ro
+    ports:
+      - "127.0.0.1:8002:8002"
+    restart: unless-stopped
+
   agent-core:
     build: ./agent-core
     container_name: agent-core
@@ -34,6 +67,8 @@ services:
       ollama-runner:
         condition: service_healthy
       redis:
+        condition: service_started
+      open-brain-mcp:
         condition: service_started
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
@@ -51,6 +86,9 @@ services:
       - WATCH_MODEL=qwen3.5:35b-a3b
       - MAX_TOOL_ITERATIONS=5
       - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+      - MS_GRAPH_CLIENT_ID=${MS_GRAPH_CLIENT_ID}
+      - BRAIN_URL=http://open-brain-mcp:8002
     volumes:
       - ./agent-core/policy.yaml:/app/policy.yaml:ro
       - agent_sandbox:/sandbox
@@ -58,11 +96,11 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s       # Ollama boot time
+      test: ["CMD-SHELL", "curl -f --max-time 30 http://localhost:8000/health || exit 1"]
+      interval: 60s
+      timeout: 35s
+      retries: 5
+      start_period: 90s       # Ollama boot time
     restart:
         unless-stopped
 
@@ -137,6 +175,45 @@ services:
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     restart: unless-stopped
 
+  mumble-server:
+    image: mumblevoip/mumble-server:latest
+    container_name: mumble-server
+    networks:
+      - agent_net
+    volumes:
+      - mumble_data:/data
+    environment:
+      - MUMBLE_SUPERUSER_PASSWORD=${MUMBLE_SUPERUSER_PASSWORD}
+    ports:
+      - "64738:64738"        # TCP (control channel)
+      - "64738:64738/udp"    # UDP (voice traffic)
+    restart: unless-stopped
+
+  mumble-bot:
+    build: ./mumble-bot
+    container_name: mumble-bot
+    networks:
+      - agent_net
+    depends_on:
+      agent-core:
+        condition: service_started
+      redis:
+        condition: service_started
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MUMBLE_HOST=mumble-server
+      - MUMBLE_PORT=64738
+      - MUMBLE_PASSWORD=${MUMBLE_SERVER_PASSWORD}
+      - MUMBLE_BOT_NAME=Agent
+      - MUMBLE_CHANNEL=Root
+      - AGENT_URL=http://agent-core:8000
+      - AGENT_API_KEY=${AGENT_API_KEY}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - BRAIN_URL=http://open-brain-mcp:8002
+      - MUMBLE_OWNER_USERNAMES=${MUMBLE_OWNER_USERNAMES:-Andy}
+      - MUMBLE_OWNER_CERT_HASH=${MUMBLE_OWNER_CERT_HASH:-}
+    restart: unless-stopped
+
 networks:
   agent_net:
     driver: bridge
@@ -145,4 +222,6 @@ volumes:
   ollama_data:
   chroma_data:
   agent_sandbox:
+  mumble_data:
+  brain_data:
 

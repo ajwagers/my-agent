@@ -1,0 +1,8 @@
+pymumble
+faster-whisper
+piper-tts
+webrtcvad-wheels
+numpy
+scipy
+requests
+redis

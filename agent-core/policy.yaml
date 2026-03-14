@@ -60,6 +60,45 @@ rate_limits:
   recall:
     max_calls: 20
     window_seconds: 60
+  create_task:
+    max_calls: 5
+    window_seconds: 60
+  list_tasks:
+    max_calls: 20
+    window_seconds: 60
+  cancel_task:
+    max_calls: 10
+    window_seconds: 60
+  calculate:
+    max_calls: 50
+    window_seconds: 60
+  convert_units:
+    max_calls: 50
+    window_seconds: 60
+  python_exec:
+    max_calls: 10
+    window_seconds: 60
+  calendar_read:
+    max_calls: 20
+    window_seconds: 60
+  calendar_write:
+    max_calls: 5
+    window_seconds: 60
+  memory_capture:
+    max_calls: 20
+    window_seconds: 60
+  memory_search:
+    max_calls: 20
+    window_seconds: 60
+  sp_inventory:
+    max_calls: 20
+    window_seconds: 60
+  sp_orders:
+    max_calls: 20
+    window_seconds: 60
+  sp_faq:
+    max_calls: 30
+    window_seconds: 60
 
 max_tool_iterations: 5  # operator-tunable hard cap on tool-calling rounds per request
 

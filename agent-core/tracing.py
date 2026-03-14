@@ -306,6 +306,13 @@ def log_approval_event(
     return _emit("approval", data)
 
 
+def log_job_event(job_id: str, status: str, **extra) -> str:
+    """Log a job lifecycle event (created, running, completed, failed)."""
+    data = {"job_id": job_id, "status": status}
+    data.update(extra)
+    return _emit("job", data)
+
+
 # ---------------------------------------------------------------------------
 # Query helper (for dashboard)
 # ---------------------------------------------------------------------------

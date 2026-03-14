@@ -9,7 +9,7 @@ import redis
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import (
-    Application, MessageHandler, CallbackQueryHandler, filters, ContextTypes,
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes,
 )
 from zoneinfo import ZoneInfo
 
@@ -290,6 +290,26 @@ async def _queue_worker(application) -> None:
         return
 
 
+async def handle_remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/remember <thought> — save a thought to brain memory."""
+    if YOUR_CHAT_ID and update.effective_chat.id != YOUR_CHAT_ID:
+        return
+    if not update.message:
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /remember <thought to save>")
+        return
+    thought = " ".join(context.args)
+    chat_id = update.effective_chat.id
+    redis_client.lpush(QUEUE_KEY, json.dumps({
+        "chat_id": chat_id,
+        "user_id": str(chat_id),
+        "message": f"/remember {thought}",
+        "message_id": update.message.message_id,
+    }))
+    await update.message.reply_text("📝 Saving to memory...")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Filter: only your chat ID
     if YOUR_CHAT_ID and update.effective_chat.id != YOUR_CHAT_ID:
@@ -358,6 +378,9 @@ def main():
     # Build app
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     
+    # Handler: /remember command → capture to brain memory
+    app.add_handler(CommandHandler("remember", handle_remember_command))
+
     # Handler: your chat ID + text only
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,

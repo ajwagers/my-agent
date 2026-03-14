@@ -51,7 +51,8 @@ chroma-rag container:
 ## Prerequisites
 
 - **Completed stack from Setup Guide 3 + Phase 4A + Phase 4B** (skill framework, all 7 existing skills working, Redis-backed rate limiting in place)
-- `chroma-rag` container running (already in compose from Phase 4A)
+- `chroma-rag` container running (already in compose from Phase 4A). If starting fresh: `docker compose up -d chroma-rag`
+- `nomic-embed-text` pulled in Ollama — required for embeddings: `docker exec ollama-runner ollama pull nomic-embed-text`
 - `chromadb` package already in `agent-core/requirements.txt`
 - No new infrastructure — no new containers, no new env vars required (heartbeat uses `HEARTBEAT_INTERVAL_SECONDS` with a sensible default of 60)
 
@@ -866,11 +867,14 @@ The biggest risk in long-term memory is **memory poisoning**: web content, user 
 
 ## What's Next
 
-Phase 4C-Part-2 (jobs/scheduled tasks):
-1. **Redis-backed job queue** — `create_task`, `list_tasks`, `cancel_task` skills with scheduled/event/one-shot trigger types.
-2. **Heartbeat execution** — `_tick()` checks the job queue and fires due tasks via the standard skill pipeline.
-3. **`POST /jobs`, `GET /jobs`, `DELETE /jobs/{id}`** API endpoints.
-4. **Overlap prevention** — Redis lock to prevent concurrent execution of the same job.
+**Phase 4C-Part-2 (jobs/scheduled tasks) — ✅ Complete**
+
+The heartbeat loop is now wired to a Redis-backed job queue:
+- `create_task`, `list_tasks`, `cancel_task` LLM-callable skills
+- One-shot, scheduled (specific datetime), and recurring job types
+- `_tick()` checks the queue and fires due jobs through the full tool loop
+- `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}` REST endpoints
+- Redis `SET NX` lock prevents concurrent execution of the same job across ticks
 
 Phase 4D (math, physics, media):
 1. **`calculator` skill** — Safe expression evaluation (`ast`-based, no `eval()`).
