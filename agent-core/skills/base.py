@@ -16,7 +16,7 @@ from policy import RiskLevel
 
 # Channels that are considered private / owner-only.
 # Skills with private_channels set will only execute on these channels.
-PRIVATE_CHANNELS: FrozenSet[str] = frozenset({"telegram", "cli", "mumble_owner"})
+PRIVATE_CHANNELS: FrozenSet[str] = frozenset({"telegram", "cli", "mumble_owner", "web-ui"})
 
 
 @dataclass

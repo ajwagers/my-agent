@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: agent-core
+    static_configs:
+      - targets: [agent-core:8000]
+
+  # Ollama exposes Prometheus metrics natively at /metrics
+  - job_name: ollama
+    static_configs:
+      - targets: [ollama-runner:11434]

@@ -322,23 +322,86 @@ def cli():
     pass
 
 
+_IMAGE_EXTS = frozenset({
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp",
+    ".tiff", ".tif", ".webp", ".heic", ".heif",
+})
+
+
+def _is_image_file(path: str) -> bool:
+    return os.path.splitext(path.lower())[1] in _IMAGE_EXTS
+
+
+def _extract_file_text(path: str) -> str:
+    """Extract text from a file. Supports .pdf and plain text formats."""
+    if path.lower().endswith(".pdf"):
+        import pypdf
+        reader = pypdf.PdfReader(path)
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n\n".join(p for p in pages if p.strip())
+    else:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+
 @cli.command()
-@click.argument('message')
+@click.argument('message', default="")
 @click.option('--model', default=None, help='Ollama model (omit for auto-routing)')
 @click.option('--reason', '-r', is_flag=True, help='Force the reasoning model')
 @click.option('--deep', '-d', is_flag=True, help='Force the deep model')
 @click.option('--session', default='cli-default', help='Session/user ID for conversation memory')
-def chat(message, model, reason, deep, session):
-    """Simple chat via API."""
+@click.option('--file', 'filepath', default=None, help='Path to a file (txt, pdf) to include as context')
+def chat(message, model, reason, deep, session, filepath):
+    """Simple chat via API. Optionally attach a document with --file."""
     if deep:
         model = "deep"
     elif reason:
         model = "reasoning"
-    payload = {
-        "message": message,
-        "user_id": session,
-        "channel": "cli",
-    }
+
+    if filepath:
+        if _is_image_file(filepath):
+            # Image file — base64-encode and send for OCR-based receipt scanning
+            import base64 as _b64
+            try:
+                with open(filepath, "rb") as f:
+                    image_b64 = _b64.b64encode(f.read()).decode()
+            except Exception as e:
+                print(f"Error reading image: {e}", file=sys.stderr)
+                sys.exit(1)
+            full_message = message if message else "Please extract and log the expenses from this receipt."
+            payload = {
+                "message": full_message,
+                "image_base64": image_b64,
+                "user_id": session,
+                "channel": "cli",
+            }
+        else:
+            try:
+                file_text = _extract_file_text(filepath)
+            except Exception as e:
+                print(f"Error reading file: {e}", file=sys.stderr)
+                sys.exit(1)
+            filename = os.path.basename(filepath)
+            file_block = f"[File: {filename}]\n{file_text}\n[End of file]"
+            if message:
+                full_message = f"{file_block}\n\n{message}"
+            else:
+                full_message = f"{file_block}\n\nPlease summarize or describe the above document."
+            payload = {
+                "message": full_message,
+                "user_id": session,
+                "channel": "cli",
+            }
+    else:
+        if not message:
+            print("Error: provide a MESSAGE or use --file.", file=sys.stderr)
+            sys.exit(1)
+        payload = {
+            "message": message,
+            "user_id": session,
+            "channel": "cli",
+        }
+
     if model is not None:
         payload["model"] = model
     resp = requests.post(f"{API_BASE}/chat", json=payload, headers=_AUTH_HEADERS)
@@ -453,6 +516,42 @@ def bootstrap_reset():
             server_thread.join()
         except KeyboardInterrupt:
             print("\nShutting down.")
+
+
+@cli.command(name="calendar-auth")
+def calendar_auth():
+    """Authenticate the agent with Microsoft Calendar (device code flow).
+
+    Opens a browser-friendly URL + code. Sign in with any Microsoft account
+    (including accounts registered with a non-Microsoft email address).
+    """
+    from calendar_auth import init_device_flow, complete_device_flow, get_ms_token
+
+    # Check if already authenticated with a valid token
+    try:
+        get_ms_token()
+        print("Already authenticated and token is valid.")
+        print("To force re-authentication, delete /agent/ms_token_cache.bin and run again.")
+        return
+    except RuntimeError:
+        pass  # Need to authenticate
+
+    print("\n=== Microsoft Calendar Authentication ===\n")
+    try:
+        flow = init_device_flow()
+    except RuntimeError as e:
+        print(f"Error starting auth flow: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(flow["message"])
+    print("\nWaiting for you to complete sign-in...\n")
+
+    try:
+        complete_device_flow(flow)
+        print("\nAuthentication successful! Calendar access is now enabled.")
+    except RuntimeError as e:
+        print(f"\nAuthentication failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 @cli.command()

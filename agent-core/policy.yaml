@@ -99,6 +99,24 @@ rate_limits:
   sp_faq:
     max_calls: 30
     window_seconds: 60
+  sp_costs:
+    max_calls: 20
+    window_seconds: 60
+  sp_time_log:
+    max_calls: 20
+    window_seconds: 60
+  sp_recipes:
+    max_calls: 20
+    window_seconds: 60
+  sp_promotions:
+    max_calls: 20
+    window_seconds: 60
+  shell_exec:
+    max_calls: 5
+    window_seconds: 60
+  github:
+    max_calls: 10
+    window_seconds: 60
 
 max_tool_iterations: 5  # operator-tunable hard cap on tool-calling rounds per request
 

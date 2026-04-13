@@ -1,3 +1,5 @@
+import base64
+import io
 import logging
 import os
 import json
@@ -29,6 +31,24 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 MAX_TG_LEN = 4096  # Hard Telegram limit.
 
 RISK_EMOJI = {"low": "🟢", "medium": "🟡", "high": "🟠", "critical": "🔴"}
+
+# Rate limiting: Telegram allows ~1 message/second per chat.
+# Enforcing 1.1 s gives comfortable headroom.
+_MIN_SEND_INTERVAL = 1.1
+_last_send: float = 0.0
+_send_lock = asyncio.Lock()
+
+
+async def _throttled_send(bot, chat_id: int, text: str, **kwargs) -> None:
+    """Send a message, enforcing _MIN_SEND_INTERVAL between sends to avoid flood control."""
+    global _last_send
+    async with _send_lock:
+        now = time.time()
+        wait = _MIN_SEND_INTERVAL - (now - _last_send)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        _last_send = time.time()
 
 CONTENT_PREVIEW_LIMIT = 500
 
@@ -82,7 +102,8 @@ async def _notification_subscriber(application):
                     data = json.loads(msg["data"])
                     text = data.get("text", "")
                     if text:
-                        await application.bot.send_message(
+                        await _throttled_send(
+                            application.bot,
                             chat_id=YOUR_CHAT_ID,
                             text=text,
                             parse_mode="Markdown",
@@ -219,12 +240,15 @@ async def post_init(application):
 **Boot:** {now.strftime('%Y-%m-%d %H:%M:%S EST')}
 """
 
-    await application.bot.send_message(
-        chat_id=YOUR_CHAT_ID,
-        text=uptime_msg,
-        parse_mode="Markdown"
-    )
-    logger.info(f"Sent {greeting} message to {title}")
+    try:
+        await application.bot.send_message(
+            chat_id=YOUR_CHAT_ID,
+            text=uptime_msg,
+            parse_mode="Markdown"
+        )
+        logger.info(f"Sent {greeting} message to {title}")
+    except Exception:
+        logger.exception("Failed to send startup greeting (flood control active?)")
 
     # Start background workers
     asyncio.create_task(_approval_subscriber(application))
@@ -235,12 +259,15 @@ async def post_init(application):
     await _catch_up_pending(application)
 
 
-def _sync_call_agent(message: str, user_id: str) -> str:
+def _sync_call_agent(message: str, user_id: str, image_base64: str = None) -> str:
     """Blocking agent HTTP call — run via asyncio.to_thread so it doesn't block the event loop."""
     try:
+        payload = {"message": message, "user_id": user_id, "channel": "telegram"}
+        if image_base64:
+            payload["image_base64"] = image_base64
         resp = requests.post(
             f"{AGENT_URL}/chat",
-            json={"message": message, "user_id": user_id, "channel": "telegram"},
+            json=payload,
             headers={"X-Api-Key": AGENT_API_KEY},
             timeout=None,
         )
@@ -269,7 +296,8 @@ async def _queue_worker(application) -> None:
             typing_task = asyncio.create_task(_typing_loop(chat_id, application.bot))
             try:
                 reply_text = await asyncio.to_thread(
-                    _sync_call_agent, job["message"], job["user_id"]
+                    _sync_call_agent, job["message"], job["user_id"],
+                    job.get("image_base64"),
                 )
             finally:
                 typing_task.cancel()
@@ -277,14 +305,18 @@ async def _queue_worker(application) -> None:
 
             for chunk in _split_message(reply_text, MAX_TG_LEN):
                 try:
-                    await application.bot.send_message(
+                    await _throttled_send(
+                        application.bot,
                         chat_id=chat_id,
                         text=chunk,
                         reply_to_message_id=message_id,
                     )
-                except Exception:
-                    # Fallback if original message was deleted
-                    await application.bot.send_message(chat_id=chat_id, text=chunk)
+                except Exception as send_err:
+                    # Fallback if original message was deleted (or reply_to fails)
+                    try:
+                        await _throttled_send(application.bot, chat_id=chat_id, text=chunk)
+                    except Exception:
+                        logger.exception(f"Failed to send response chunk (primary: {send_err})")
 
     except asyncio.CancelledError:
         return
@@ -310,6 +342,238 @@ async def handle_remember_command(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text("📝 Saving to memory...")
 
 
+async def handle_switch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/switch [persona_name] — switch agent persona or list available ones."""
+    if YOUR_CHAT_ID and update.effective_chat.id != YOUR_CHAT_ID:
+        return
+    if not update.message:
+        return
+
+    user_id = str(update.effective_chat.id)
+
+    if not context.args:
+        # List all personas
+        try:
+            resp = await asyncio.to_thread(
+                requests.get,
+                f"{AGENT_URL}/personas",
+                headers={"X-Api-Key": AGENT_API_KEY},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            await update.message.reply_text(f"❌ Could not fetch personas: {e}")
+            return
+
+        # Get current session
+        current = redis_client.get(f"persona:session:{user_id}") or "default"
+        lines = ["Available agents:"]
+        for p in data.get("personas", []):
+            marker = " <- active" if p["name"] == current else ""
+            lines.append(f"  {p['display_name']} — /switch {p['name']}{marker}")
+        lines.append("\nType /switch default to return to the main agent.")
+        try:
+            await update.message.reply_text("\n".join(lines))
+        except Exception:
+            logger.exception("Failed to send /switch list")
+        return
+
+    persona_name = context.args[0].lower()
+    try:
+        resp = await asyncio.to_thread(
+            requests.post,
+            f"{AGENT_URL}/persona/session",
+            json={"user_id": user_id, "persona_name": persona_name},
+            headers={"X-Api-Key": AGENT_API_KEY},
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            await update.message.reply_text(f"❌ Unknown agent: `{persona_name}`. Try /switch to see options.", parse_mode="Markdown")
+            return
+        resp.raise_for_status()
+        data = resp.json()
+        display = data.get("display_name", persona_name)
+        if persona_name == "default":
+            msg = "✅ Switched back to the main AI agent."
+        else:
+            msg = f"✅ Switched to {display}."
+        try:
+            await update.message.reply_text(msg)
+        except Exception:
+            logger.exception("Failed to send switch confirmation")
+    except Exception as e:
+        logger.exception(f"Persona switch failed")
+        try:
+            await update.message.reply_text(f"❌ Switch failed: {e}")
+        except Exception:
+            pass
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle photo messages — download, base64-encode, queue for OCR processing."""
+    if YOUR_CHAT_ID and update.effective_chat.id != YOUR_CHAT_ID:
+        return
+    if not update.message or not update.message.photo:
+        return
+
+    chat_id = update.effective_chat.id
+    caption = (update.message.caption or "").strip()
+    if not caption:
+        caption = "Please extract and log the expenses from this receipt."
+
+    # Download highest-resolution photo
+    try:
+        photo = update.message.photo[-1]
+        tg_file = await context.bot.get_file(photo.file_id)
+        buf = io.BytesIO()
+        await tg_file.download_to_memory(buf)
+        image_b64 = base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not download photo: {e}")
+        return
+
+    redis_client.lpush(QUEUE_KEY, json.dumps({
+        "chat_id": chat_id,
+        "user_id": str(chat_id),
+        "message": caption,
+        "message_id": update.message.message_id,
+        "image_base64": image_b64,
+    }))
+
+    depth = redis_client.llen(QUEUE_KEY)
+    is_busy = bool(redis_client.exists(QUEUE_ACTIVE_KEY))
+    position = depth + (1 if is_busy else 0)
+    ack = (
+        f"📸 Got the receipt — you're #{position} in queue, processing shortly."
+        if position > 1 else "📸 Got it, scanning receipt..."
+    )
+    try:
+        await update.message.reply_text(ack)
+    except Exception:
+        logger.exception("Failed to send photo ack")
+
+
+_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff"}
+_PDF_MIME_TYPE = "application/pdf"
+_PDF_TEXT_LIMIT = 8000  # characters — avoid flooding the context window
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    """Extract plain text from PDF bytes using pypdf."""
+    import pypdf
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    parts = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        parts.append(text)
+    return "\n".join(parts).strip()
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle document messages (PDFs and images sent as files)."""
+    if YOUR_CHAT_ID and update.effective_chat.id != YOUR_CHAT_ID:
+        return
+    if not update.message or not update.message.document:
+        return
+
+    doc = update.message.document
+    mime = doc.mime_type or ""
+    chat_id = update.effective_chat.id
+    caption = (update.message.caption or "").strip()
+
+    # Download the file
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        buf = io.BytesIO()
+        await tg_file.download_to_memory(buf)
+        file_bytes = buf.getvalue()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not download file: {e}")
+        return
+
+    if mime == _PDF_MIME_TYPE:
+        # Extract text and queue as a text message
+        try:
+            pdf_text = await asyncio.to_thread(_extract_pdf_text, file_bytes)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Could not read PDF: {e}")
+            return
+
+        if not pdf_text:
+            await update.message.reply_text("❌ The PDF appears to be empty or image-only (no extractable text). Send a photo instead.")
+            return
+
+        if len(pdf_text) > _PDF_TEXT_LIMIT:
+            pdf_text = pdf_text[:_PDF_TEXT_LIMIT] + "\n... [truncated]"
+
+        filename = doc.file_name or "document.pdf"
+        fname_lower = filename.lower()
+
+        # Use caption if provided; otherwise infer intent from filename
+        if caption:
+            user_prompt = caption
+        elif any(w in fname_lower for w in ("inventory", "stock", "ingredients", "materials")):
+            user_prompt = "Please update the inventory quantities from this document using sp_inventory → bulk_update."
+        elif any(w in fname_lower for w in ("receipt", "invoice", "expense", "order", "purchase")):
+            user_prompt = "Please extract and log the expenses from this receipt using sp_costs → log_expense."
+        else:
+            user_prompt = "Please review this document and take the appropriate action (update inventory, log expenses, or summarise)."
+
+        full_message = f"[File: {filename}]\n{pdf_text}\n\n{user_prompt}"
+
+        redis_client.lpush(QUEUE_KEY, json.dumps({
+            "chat_id": chat_id,
+            "user_id": str(chat_id),
+            "message": full_message,
+            "message_id": update.message.message_id,
+        }))
+
+        depth = redis_client.llen(QUEUE_KEY)
+        is_busy = bool(redis_client.exists(QUEUE_ACTIVE_KEY))
+        position = depth + (1 if is_busy else 0)
+        ack = (
+            f"📄 Got the PDF — you're #{position} in queue, processing shortly."
+            if position > 1 else "📄 Got it, reading PDF..."
+        )
+        try:
+            await update.message.reply_text(ack)
+        except Exception:
+            logger.exception("Failed to send document ack")
+
+    elif mime in _IMAGE_MIME_TYPES:
+        # Image sent as a file — treat same as PHOTO
+        image_b64 = base64.b64encode(file_bytes).decode()
+        if not caption:
+            caption = "Please extract and log the expenses from this receipt."
+
+        redis_client.lpush(QUEUE_KEY, json.dumps({
+            "chat_id": chat_id,
+            "user_id": str(chat_id),
+            "message": caption,
+            "message_id": update.message.message_id,
+            "image_base64": image_b64,
+        }))
+
+        depth = redis_client.llen(QUEUE_KEY)
+        is_busy = bool(redis_client.exists(QUEUE_ACTIVE_KEY))
+        position = depth + (1 if is_busy else 0)
+        ack = (
+            f"🖼️ Got the image — you're #{position} in queue, processing shortly."
+            if position > 1 else "🖼️ Got it, scanning image..."
+        )
+        try:
+            await update.message.reply_text(ack)
+        except Exception:
+            logger.exception("Failed to send image-doc ack")
+
+    else:
+        await update.message.reply_text(
+            f"⚠️ Unsupported file type ({mime or 'unknown'}). "
+            "Please send a PDF or image (JPEG/PNG/WebP)."
+        )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Filter: only your chat ID
     if YOUR_CHAT_ID and update.effective_chat.id != YOUR_CHAT_ID:
@@ -333,12 +597,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     is_busy = bool(redis_client.exists(QUEUE_ACTIVE_KEY))
     position = depth + (1 if is_busy else 0)
 
+    import re as _re
+    _HOURS_PATTERN = _re.compile(
+        r"\bworked\b.{0,30}(?:hour|hr)|\bstarted\s+at\s+\d|\bended\s+at\s+\d|\blog.*hours?\b",
+        _re.IGNORECASE,
+    )
+
     if position > 1:
         ack = f"⏳ Got it — model is busy, you're #{position} in queue. I'll reply when ready."
+    elif _HOURS_PATTERN.search(user_message):
+        ack = "⏱️ Got it, logging your hours..."
     else:
         ack = "⏳ On it..."
 
-    await update.message.reply_text(ack)
+    try:
+        await update.message.reply_text(ack)
+    except Exception:
+        logger.exception("Failed to send ack")
 
 
 async def _typing_loop(chat_id: int, bot) -> None:
@@ -380,12 +655,19 @@ def main():
     
     # Handler: /remember command → capture to brain memory
     app.add_handler(CommandHandler("remember", handle_remember_command))
+    app.add_handler(CommandHandler("switch", handle_switch_command))
 
     # Handler: your chat ID + text only
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_message
     ))
+
+    # Handler: photo messages (receipt scanning)
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    # Handler: document messages (PDFs, images sent as files)
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     # Handler: approval inline keyboard callbacks
     app.add_handler(CallbackQueryHandler(handle_approval_callback))

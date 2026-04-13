@@ -115,31 +115,39 @@ class _BadSanitizerSkill(_GoodSkill):
 # FakeOllamaClient for tool loop tests
 # ---------------------------------------------------------------------------
 
+def _make_response(content: str, tool_calls=None):
+    """Build a typed-style response object matching ollama>=0.6.1 API."""
+    msg = MagicMock()
+    msg.content = content
+    msg.tool_calls = tool_calls or []
+    resp = MagicMock()
+    resp.message = msg
+    return resp
+
+
 class FakeOllamaClient:
     """Deterministic Ollama client driven by a pre-loaded response queue."""
 
     def __init__(self, responses: list):
         self._responses = list(responses)
 
-    def chat(self, model, messages, tools=None, options=None):
+    async def chat(self, model, messages, tools=None, options=None, think=None):
         if self._responses:
             return self._responses.pop(0)
-        return {"message": {"content": "default answer", "tool_calls": None}}
+        return _make_response("default answer")
 
 
-def _tool_call_response(name: str, args: dict) -> dict:
+def _tool_call_response(name: str, args: dict):
     """Helper: build an Ollama response that requests one tool call."""
-    return {
-        "message": {
-            "content": "",
-            "tool_calls": [{"function": {"name": name, "arguments": args}}],
-        }
-    }
+    tc = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = args
+    return _make_response("", tool_calls=[tc])
 
 
-def _text_response(text: str) -> dict:
+def _text_response(text: str):
     """Helper: build an Ollama response with plain text and no tool calls."""
-    return {"message": {"content": text, "tool_calls": None}}
+    return _make_response(text)
 
 
 # ---------------------------------------------------------------------------
@@ -1136,19 +1144,7 @@ class TestRunToolLoopWithTools:
 
         reg = self._registry_with_good_skill()
         # Simulate Ollama sending arguments as a JSON string instead of a dict
-        response = {
-            "message": {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "function": {
-                            "name": "good_skill",
-                            "arguments": json.dumps({"text": "json-string-args"}),
-                        }
-                    }
-                ],
-            }
-        }
+        response = _tool_call_response("good_skill", json.dumps({"text": "json-string-args"}))
         client = FakeOllamaClient([response, _text_response("ok")])
         _, msgs, _ = await run_tool_loop(
             ollama_client=client,
@@ -2401,7 +2397,7 @@ class TestPythonExecSkill:
         from skills.python_exec import PythonExecSkill
         return PythonExecSkill(
             ollama_host="http://ollama-runner:11434",
-            reasoning_model="qwen3:8b",
+            reasoning_model="gemma4:e4b",
         )
 
     # --- metadata ---

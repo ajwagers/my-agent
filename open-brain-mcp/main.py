@@ -25,6 +25,11 @@ import tools.household as household
 import tools.inventory as inventory
 import tools.orders as orders
 import tools.faq as faq
+import tools.expenses as expenses
+import tools.time_log as time_log
+import tools.recipes as recipes_tools
+import tools.promotions as promotions
+import tools.todos as todos
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -361,6 +366,12 @@ async def api_get_inventory_item(sku: str):
 async def api_list_inventory(category: str = None):
     return await inventory.list_inventory(category)
 
+@app.post("/tools/bulk_update_inventory")
+async def api_bulk_update_inventory(req: Request):
+    body = await req.json()
+    updates = body if isinstance(body, list) else body.get("updates", [])
+    return await inventory.bulk_update_quantities(updates)
+
 @app.get("/tools/list_low_stock")
 async def api_list_low_stock():
     return await inventory.list_low_stock()
@@ -439,6 +450,186 @@ async def api_update_faq_entry(faq_id: str, req: UpdateFAQRequest):
 @app.get("/tools/list_faq_by_category")
 async def api_list_faq_by_category(category: str = None):
     return await faq.list_faq_by_category(category)
+
+
+# ── REST API — Expenses / COGS ─────────────────────────────────────────────────
+
+class LogExpenseRequest(BaseModel):
+    description: str
+    amount: float
+    category: str = "ingredients"
+    expense_date: str = None
+    supplier: str = None
+    sku: str = None
+    quantity: float = None
+    unit: str = None
+    receipt_ref: str = None
+    notes: str = None
+
+class ListExpensesRequest(BaseModel):
+    start_date: str = None
+    end_date: str = None
+    category: str = None
+    limit: int = 50
+
+
+@app.post("/tools/log_expense")
+async def api_log_expense(req: LogExpenseRequest):
+    return await expenses.log_expense(**req.model_dump(exclude_none=True))
+
+@app.post("/tools/list_expenses")
+async def api_list_expenses(req: ListExpensesRequest):
+    return await expenses.list_expenses(**req.model_dump(exclude_none=True))
+
+@app.get("/tools/expense_summary")
+async def api_expense_summary(year: int = None, month: int = None):
+    return await expenses.expense_summary(year, month)
+
+@app.get("/tools/batch_cogs/{batch_number}")
+async def api_batch_cogs(batch_number: str):
+    return await expenses.batch_cogs(batch_number)
+
+@app.get("/tools/profit_summary")
+async def api_profit_summary(year: int, month: int):
+    return await expenses.profit_summary(year, month)
+
+
+# ── REST API — Time Logs ──────────────────────────────────────────────────────
+
+class LogHoursRequest(BaseModel):
+    hours: float = None
+    log_date: str = None
+    person: str = "owner"
+    start_time: str = None
+    end_time: str = None
+    task_description: str = None
+    hourly_rate: float = None
+    notes: str = None
+
+class ListTimeLogsRequest(BaseModel):
+    start_date: str = None
+    end_date: str = None
+    person: str = None
+    limit: int = 50
+
+
+@app.post("/tools/log_hours")
+async def api_log_hours(req: LogHoursRequest):
+    return await time_log.log_hours(**req.model_dump(exclude_none=True))
+
+@app.post("/tools/list_time_logs")
+async def api_list_time_logs(req: ListTimeLogsRequest):
+    return await time_log.list_time_logs(**req.model_dump(exclude_none=True))
+
+@app.get("/tools/time_summary")
+async def api_time_summary(year: int = None, month: int = None):
+    return await time_log.time_summary(year, month)
+
+
+# ── REST API — Recipes ────────────────────────────────────────────────────────
+
+class AddRecipeRequest(BaseModel):
+    name: str
+    ingredients: list = None
+    instructions: str = None
+    servings: int = None
+    prep_time_minutes: int = None
+    tags: list = None
+
+class UpdateRecipeRequest(BaseModel):
+    name: str = None
+    ingredients: list = None
+    instructions: str = None
+    servings: int = None
+    prep_time_minutes: int = None
+    tags: list = None
+
+
+@app.post("/tools/add_recipe")
+async def api_add_recipe(req: AddRecipeRequest):
+    return await recipes_tools.add_recipe(**req.model_dump(exclude_none=True))
+
+@app.get("/tools/get_recipe/{recipe_id}")
+async def api_get_recipe(recipe_id: str):
+    return await recipes_tools.get_recipe(recipe_id)
+
+@app.get("/tools/list_recipes")
+async def api_list_recipes(tag: str = None):
+    return await recipes_tools.list_recipes(tag)
+
+@app.put("/tools/update_recipe/{recipe_id}")
+async def api_update_recipe(recipe_id: str, req: UpdateRecipeRequest):
+    return await recipes_tools.update_recipe(recipe_id, **req.model_dump(exclude_none=True))
+
+@app.delete("/tools/delete_recipe/{recipe_id}")
+async def api_delete_recipe(recipe_id: str):
+    return await recipes_tools.delete_recipe(recipe_id)
+
+
+# ── REST API — Promotions ─────────────────────────────────────────────────────
+
+class CreatePromotionRequest(BaseModel):
+    name: str; discount_type: str; discount_value: float; start_date: str
+    code: str = None; applies_to: str = "all"; sku_list: list = None
+    category: str = None; min_order_amount: float = None; max_uses: int = None
+    end_date: str = None; notes: str = None
+
+class UpdatePromotionRequest(BaseModel):
+    name: str = None; code: str = None; discount_type: str = None
+    discount_value: float = None; applies_to: str = None; sku_list: list = None
+    category: str = None; min_order_amount: float = None; max_uses: int = None
+    start_date: str = None; end_date: str = None; is_active: bool = None; notes: str = None
+
+
+@app.post("/tools/create_promotion")
+async def api_create_promotion(req: CreatePromotionRequest):
+    return await promotions.create_promotion(**req.model_dump(exclude_none=True))
+
+@app.get("/tools/list_promotions")
+async def api_list_promotions(active_only: bool = True):
+    return await promotions.list_promotions(active_only)
+
+@app.get("/tools/get_promotion/{promotion_id}")
+async def api_get_promotion(promotion_id: str):
+    return await promotions.get_promotion(promotion_id)
+
+@app.put("/tools/update_promotion/{promotion_id}")
+async def api_update_promotion(promotion_id: str, req: UpdatePromotionRequest):
+    return await promotions.update_promotion(promotion_id, **req.model_dump(exclude_none=True))
+
+@app.post("/tools/deactivate_promotion/{promotion_id}")
+async def api_deactivate_promotion(promotion_id: str):
+    return await promotions.deactivate_promotion(promotion_id)
+
+@app.post("/tools/increment_promotion_uses/{promotion_id}")
+async def api_increment_promotion_uses(promotion_id: str):
+    return await promotions.increment_uses(promotion_id)
+
+
+# ── REST API — Todos ──────────────────────────────────────────────────────────
+
+class AddTodoRequest(BaseModel):
+    text: str
+    category: str = "task"
+    priority: str = "medium"
+    source: str = "telegram"
+    user_id: str = "owner"
+
+@app.post("/tools/todo/add")
+async def api_add_todo(req: AddTodoRequest):
+    return await todos.add_todo(**req.model_dump())
+
+@app.get("/tools/todo/list")
+async def api_list_todos(status: str = "pending", category: str = None, user_id: str = "owner"):
+    return await todos.list_todos(status, category, user_id)
+
+@app.post("/tools/todo/complete/{todo_id}")
+async def api_complete_todo(todo_id: int):
+    return await todos.complete_todo(todo_id)
+
+@app.delete("/tools/todo/{todo_id}")
+async def api_delete_todo(todo_id: int):
+    return await todos.delete_todo(todo_id)
 
 
 # ── MCP Server — tool registry ────────────────────────────────────────────────

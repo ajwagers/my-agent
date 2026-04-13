@@ -25,7 +25,7 @@ class MemorySearchSkill(SkillBase):
             risk_level=RiskLevel.LOW,
             rate_limit="memory_search",
             requires_approval=False,
-            private_channels=frozenset({"telegram", "cli"}),
+            private_channels=frozenset({"telegram", "cli", "web-ui"}),
             parameters={
                 "type": "object",
                 "properties": {

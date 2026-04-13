@@ -25,7 +25,7 @@ class SummitPineOrdersSkill(SkillBase):
             risk_level=RiskLevel.LOW,
             rate_limit="sp_orders",
             requires_approval=False,
-            private_channels=frozenset({"telegram", "cli"}),
+            private_channels=frozenset({"telegram", "cli", "mumble_owner", "web-ui"}),
             parameters={
                 "type": "object",
                 "properties": {

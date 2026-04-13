@@ -1,10 +1,11 @@
 """
 Skill runner — policy-gated skill execution and Ollama tool loop.
 
-Two public entry points:
-  execute_skill()   — run one skill through the full policy pipeline
-  run_tool_loop()   — drive the Ollama tool-calling loop until the model
-                      stops requesting tools or max_iterations is reached
+Public entry points:
+  execute_skill()        — run one skill through the full policy pipeline
+  gather_tool_context()  — run all tool iterations, return messages ready for synthesis
+                           plus an optional precomputed answer when no tools were needed
+  run_tool_loop()        — full loop: gather_tool_context + batch synthesis (original API)
 
 Neither function raises — all failures are returned as error strings so the
 LLM can see what went wrong and decide how to proceed.
@@ -13,7 +14,7 @@ LLM can see what went wrong and decide how to proceed.
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 # Phrases that indicate the model explicitly refused tool use due to perceived
 # lack of real-time access. Kept as a fallback for cases where the user message
@@ -37,9 +38,6 @@ _REFUSAL_PATTERN = re.compile(
     r"|api access"
     r"|cannot.*external"
     r"|unable to access"
-    # Patterns for models that answer confidently from stale training data
-    # without explicitly refusing — e.g. qwen3 saying it was "developed prior
-    # to April 2023" or referring to "my last update".
     r"|developed prior to"
     r"|prior to \w+ 20\d\d"
     r"|as of my (training|knowledge|last)"
@@ -51,10 +49,6 @@ _REFUSAL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Keywords in the *user's* message that indicate real-time data is likely needed.
-# Checking the input is more robust than matching the model's refusal phrasing —
-# the nudge fires whether the model explicitly refuses, silently answers from
-# training data, or uses any phrasing not listed in _REFUSAL_PATTERN.
 _REALTIME_SIGNAL = re.compile(
     r"current|latest|recent|today|tonight|right now|live|"
     r"weather|forecast|temperature|"
@@ -64,7 +58,6 @@ _REALTIME_SIGNAL = re.compile(
     r"scrape|crawl|fetch.+url|"
     r"search for|look up|find out|check if|"
     r"who won|what happened|is .{1,30} open|when does|"
-    # Current office-holders, leadership, status questions
     r"who is (?:the |a )?(?:current )?(?:president|prime minister|ceo|head|"
     r"leader|governor|mayor|secretary|director|chancellor|king|queen|pope)|"
     r"who (?:leads|runs|heads|controls|governs|commands)\b|"
@@ -79,6 +72,68 @@ _RETRY_NUDGE = (
     "You have a web_search tool available. "
     "Please use it now to find a current answer rather than relying on training data."
 )
+
+# Human-readable status labels for each skill, shown to the user during streaming.
+_SKILL_STATUS_LABELS: Dict[str, str] = {
+    "web_search": "Searching the web",
+    "url_fetch": "Fetching URL",
+    "file_read": "Reading file",
+    "file_write": "Writing file",
+    "pdf_parse": "Parsing PDF",
+    "rag_search": "Searching documents",
+    "rag_ingest": "Indexing document",
+    "remember": "Saving to memory",
+    "recall": "Searching memory",
+    "search_thoughts": "Searching brain memory",
+    "capture_thought": "Saving to brain memory",
+    "python_exec": "Running Python code",
+    "calculate": "Calculating",
+    "convert_units": "Converting units",
+    "calendar_read": "Checking calendar",
+    "calendar_write": "Updating calendar",
+    "sp_inventory": "Checking inventory",
+    "sp_orders": "Looking up orders",
+    "sp_faq": "Searching FAQ",
+    "sp_costs": "Checking expenses",
+    "sp_time_log": "Logging time",
+    "sp_recipes": "Looking up recipes",
+    "sp_promotions": "Checking promotions",
+    "create_task": "Scheduling task",
+    "list_tasks": "Listing tasks",
+    "cancel_task": "Cancelling task",
+    "todo": "Updating to-do list",
+    "shell_exec": "Running shell command",
+    "github": "Accessing GitHub",
+    "memory_capture": "Saving to memory",
+    "memory_search": "Searching memory",
+}
+
+
+def _skill_status_text(skill_name: str) -> str:
+    """Return a short human-readable status string for a skill being executed."""
+    label = _SKILL_STATUS_LABELS.get(skill_name, f"Running {skill_name}")
+    return f"{label}..."
+
+
+def _msg_content(msg) -> str:
+    """Extract text content from a Message object or dict."""
+    if isinstance(msg, dict):
+        return msg.get("content", "") or ""
+    return msg.content or ""
+
+
+def _msg_to_dict(msg) -> Dict:
+    """Convert an ollama Message object to a plain dict for the messages list."""
+    if isinstance(msg, dict):
+        return msg
+    d: Dict = {"role": msg.role, "content": msg.content or ""}
+    if msg.tool_calls:
+        d["tool_calls"] = [
+            {"function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+            for tc in msg.tool_calls
+        ]
+    return d
+
 
 import tracing
 from approval import ApprovalManager
@@ -95,6 +150,7 @@ async def execute_skill(
     auto_approve: bool,
     user_id: str,
     channel: str = "",
+    persona: str = "default",
 ) -> str:
     """Run a skill through the full policy pipeline.
 
@@ -167,11 +223,9 @@ async def execute_skill(
             return f"[{skill_name}] Approval error: {exc}"
 
     # 4. Execute with timing
-    # Inject context for skills that need user scoping (e.g. remember, recall).
-    # Done after validation so _user_id doesn't interfere with param checks.
     start_time = time.time()
     try:
-        result = await skill.execute({**params, "_user_id": user_id})
+        result = await skill.execute({**params, "_user_id": user_id, "_persona": persona})
         status = "success"
     except Exception as exc:
         duration_ms = (time.time() - start_time) * 1000
@@ -217,8 +271,7 @@ async def execute_skill(
     return sanitized
 
 
-
-async def run_tool_loop(
+async def gather_tool_context(
     ollama_client: Any,
     messages: List[Dict],
     tools: Optional[List[Dict]],
@@ -231,46 +284,43 @@ async def run_tool_loop(
     user_id: str,
     max_iterations: int,
     channel: str = "",
-) -> Tuple[str, List[Dict], Dict]:
-    """Drive the Ollama tool-calling loop.
+    persona: str = "",
+    status_callback: Optional[Callable[[str], Coroutine]] = None,
+) -> Tuple[List[Dict], Dict, Optional[str]]:
+    """Run tool-calling iterations and return context ready for synthesis.
 
-    Single-model loop: `model` handles dispatch, tool calls, and synthesis.
-    On the first iteration, if the model produces no tool calls and the user
-    message contains real-time signals (or the model explicitly refuses to
-    search), one nudge is injected and the loop retries.
+    This is the core loop shared by both the batch and streaming chat endpoints.
+    It handles tool dispatch, nudge retries, and per-skill call limits — but does
+    NOT generate the final text response. That is left to the caller so it can
+    choose between batch and streaming synthesis.
+
+    Args:
+        status_callback: Optional async callable invoked before each skill
+            execution with a human-readable status string. Used by the streaming
+            endpoint to emit progress events to the client.
 
     Returns:
-        (final_text, updated_messages, stats) where:
-          final_text       — the model's last text response
-          updated_messages — messages list with all tool turns appended
-          stats            — {"iterations": int, "skills_called": List[str]}
+        (messages, stats, precomputed_text) where:
+          messages        — accumulated context ready to pass to the synthesis call
+          stats           — {"iterations": int, "skills_called": List[str],
+                             "max_iterations_hit": bool}
+          precomputed_text — the model's response text when it answered directly
+                             without calling any tools (or after a nudge retry).
+                             None when tools were called — caller must synthesize
+                             over the accumulated tool context.
+
+    The distinction matters for streaming: when precomputed_text is not None and
+    no skills were called, the caller can yield it immediately without an extra
+    model call. When skills were called, a fresh streaming synthesis call gives
+    the user real-time token delivery over the tool results.
     """
     options = {"num_ctx": ctx}
 
-    def _msg_content(msg) -> str:
-        """Extract text content from a Message object or dict."""
-        if isinstance(msg, dict):
-            return msg.get("content", "") or ""
-        return msg.content or ""
-
-    def _msg_to_dict(msg) -> Dict:
-        """Convert an ollama Message object to a plain dict for the messages list."""
-        if isinstance(msg, dict):
-            return msg
-        d: Dict = {"role": msg.role, "content": msg.content or ""}
-        if msg.tool_calls:
-            d["tool_calls"] = [
-                {"function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                for tc in msg.tool_calls
-            ]
-        return d
-
-    # No tools — straight to model, no loop needed
+    # No tools registered — one batch call, return result as precomputed.
     if not tools:
         response = await ollama_client.chat(model=model, messages=messages, options=options)
         text = _msg_content(response.message)
-        messages = messages + [{"role": "assistant", "content": text}]
-        return text, messages, {"iterations": 0, "skills_called": []}
+        return messages, {"iterations": 0, "skills_called": [], "max_iterations_hit": False}, text
 
     per_skill_counts: Dict[str, int] = {}
     skills_called: List[str] = []
@@ -287,12 +337,10 @@ async def run_tool_loop(
         msg = response.message
         tool_calls = msg.tool_calls or []
 
-        # ── No tool calls proposed ──────────────────────────────────────────
+        # ── No tool calls proposed ────────────────────────────────────────────
         if not tool_calls:
             text = _msg_content(msg)
 
-            # Nudge once on the first pass if real-time signals or explicit
-            # refusal phrasing detected and no skills have run yet.
             last_user_msg = next(
                 (m.get("content", "") for m in reversed(messages) if m["role"] == "user"),
                 "",
@@ -306,8 +354,14 @@ async def run_tool_loop(
                 iteration += 1
                 continue
 
-            messages = messages + [{"role": "assistant", "content": text}]
-            return text, messages, {"iterations": iteration, "skills_called": skills_called}
+            # Model answered directly — return text as precomputed so the caller
+            # can use it without an extra synthesis call.
+            stats = {
+                "iterations": iteration,
+                "skills_called": skills_called,
+                "max_iterations_hit": False,
+            }
+            return messages, stats, text
 
         # ── Execute tool calls ───────────────────────────────────────────────
         messages = messages + [_msg_to_dict(msg)]
@@ -339,6 +393,11 @@ async def run_tool_loop(
                 else:
                     per_skill_counts[skill.name] = count + 1
                     skills_called.append(skill.name)
+                    if status_callback is not None:
+                        try:
+                            await status_callback(_skill_status_text(skill.name))
+                        except Exception:
+                            pass
                     tool_result = await execute_skill(
                         skill=skill,
                         params=params,
@@ -347,24 +406,78 @@ async def run_tool_loop(
                         auto_approve=auto_approve,
                         user_id=user_id,
                         channel=channel,
+                        persona=persona,
                     )
 
             messages = messages + [{"role": "tool", "content": tool_result}]
 
         iteration += 1
 
-    # Max iterations reached — synthesis model produces the final answer
+    # Max iterations reached — append synthesis request; caller must generate answer.
     messages = messages + [
         {
             "role": "user",
             "content": "Please provide your final answer based on the information gathered so far.",
         }
     ]
-    response = await ollama_client.chat(model=model, messages=messages, options=options)
-    text = _msg_content(response.message)
-    messages = messages + [{"role": "assistant", "content": text}]
-    return (
-        f"[max iterations reached]\n{text}",
-        messages,
-        {"iterations": iteration, "skills_called": skills_called},
+    stats = {
+        "iterations": iteration,
+        "skills_called": skills_called,
+        "max_iterations_hit": True,
+    }
+    return messages, stats, None  # precomputed = None; caller must synthesize
+
+
+async def run_tool_loop(
+    ollama_client: Any,
+    messages: List[Dict],
+    tools: Optional[List[Dict]],
+    model: str,
+    ctx: int,
+    skill_registry: SkillRegistry,
+    policy_engine: PolicyEngine,
+    approval_manager: ApprovalManager,
+    auto_approve: bool,
+    user_id: str,
+    max_iterations: int,
+    channel: str = "",
+    persona: str = "",
+) -> Tuple[str, List[Dict], Dict]:
+    """Drive the Ollama tool-calling loop (batch mode).
+
+    Wraps gather_tool_context() and performs the final batch synthesis call
+    when tools were used. When no tools were called, the precomputed answer
+    from gather_tool_context is returned directly (no extra model call).
+
+    Returns:
+        (final_text, updated_messages, stats)
+    """
+    messages, stats, precomputed = await gather_tool_context(
+        ollama_client=ollama_client,
+        messages=messages,
+        tools=tools,
+        model=model,
+        ctx=ctx,
+        skill_registry=skill_registry,
+        policy_engine=policy_engine,
+        approval_manager=approval_manager,
+        auto_approve=auto_approve,
+        user_id=user_id,
+        max_iterations=max_iterations,
+        channel=channel,
+        persona=persona,
     )
+
+    options = {"num_ctx": ctx}
+
+    if precomputed is not None:
+        # Model answered without tools, or last tool-decision pass returned text.
+        text = precomputed
+    else:
+        # Tools were used or max iterations hit — synthesize over accumulated context.
+        response = await ollama_client.chat(model=model, messages=messages, options=options)
+        text = _msg_content(response.message)
+        if stats.get("max_iterations_hit"):
+            text = f"[max iterations reached]\n{text}"
+
+    return text, messages + [{"role": "assistant", "content": text}], stats

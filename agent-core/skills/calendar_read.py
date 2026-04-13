@@ -94,7 +94,7 @@ class CalendarReadSkill(SkillBase):
             rate_limit="calendar_read",
             requires_approval=False,
             max_calls_per_turn=5,
-            private_channels=frozenset({"telegram", "cli"}),
+            private_channels=frozenset({"telegram", "cli", "mumble_owner", "web-ui"}),
             parameters={
                 "type": "object",
                 "properties": {

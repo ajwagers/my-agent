@@ -161,13 +161,14 @@ class CalendarWriteSkill(SkillBase):
                 "Create, update, or delete a calendar event. "
                 "Specify action: 'create', 'update', or 'delete'. "
                 "Specify calendar: 'outlook' or 'proton'. "
-                "Owner approval required."
+                "Single events execute immediately. "
+                "Recurring series require explicit owner confirmation — set recurrence and ask before creating."
             ),
-            risk_level=RiskLevel.HIGH,
+            risk_level=RiskLevel.MEDIUM,
             rate_limit="calendar_write",
-            requires_approval=True,
+            requires_approval=False,
             max_calls_per_turn=3,
-            private_channels=frozenset({"telegram", "cli"}),
+            private_channels=frozenset({"telegram", "cli", "mumble_owner", "web-ui"}),
             parameters={
                 "type": "object",
                 "properties": {
@@ -201,6 +202,14 @@ class CalendarWriteSkill(SkillBase):
                         "type": "string",
                         "description": "Event ID (required for update and delete).",
                     },
+                    "recurrence": {
+                        "type": "string",
+                        "description": (
+                            "Recurrence rule (e.g. 'FREQ=WEEKLY;BYDAY=MO'). "
+                            "Do NOT set this without explicit owner confirmation — "
+                            "ask first before creating a recurring series."
+                        ),
+                    },
                 },
                 "required": ["action", "calendar"],
             },
@@ -230,6 +239,8 @@ class CalendarWriteSkill(SkillBase):
         return True, ""
 
     async def execute(self, params: Dict[str, Any]) -> Any:
+        params.pop("_user_id", None)
+        params.pop("_persona", None)
         action = params["action"]
         calendar = params["calendar"]
         title = params.get("title", "").strip()
@@ -237,6 +248,18 @@ class CalendarWriteSkill(SkillBase):
         end = params.get("event_end", "").strip()
         description = params.get("description", "").strip() or None
         event_id = params.get("event_id", "").strip()
+        recurrence = params.get("recurrence", "").strip()
+
+        # Recurring series require explicit owner confirmation before creation.
+        if action == "create" and recurrence:
+            return {
+                "requires_confirmation": True,
+                "message": (
+                    f"This would create a recurring series (rule: {recurrence}) "
+                    f"for '{title}' starting {start}. "
+                    "Please confirm you want to create this recurring series."
+                ),
+            }
 
         try:
             if calendar == "outlook":
@@ -259,6 +282,8 @@ class CalendarWriteSkill(SkillBase):
             return {"error": str(exc)}
 
     def sanitize_output(self, result: Any) -> str:
+        if isinstance(result, dict) and "requires_confirmation" in result:
+            return result["message"]
         if isinstance(result, dict) and "error" in result:
             return f"[calendar_write] {result['error']}"
         if isinstance(result, dict):

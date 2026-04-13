@@ -2,4 +2,5 @@ streamlit
 langchain-text-splitters
 chromadb
 chromadb[all]
-requests  # For agent-core proxy
+requests
+httpx

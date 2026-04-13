@@ -22,6 +22,68 @@ WATCH_MODEL = os.getenv("WATCH_MODEL", "qwen3.5:35b-a3b")
 _VERSION_KEY = "heartbeat:ollama_version"
 _NOTIFIED_KEY = "heartbeat:ollama_update_notified"
 
+# ---------------------------------------------------------------------------
+# Default proactive jobs — seeded once on first startup (idempotent).
+# The find_duplicate check in JobManager prevents re-creation on restarts.
+# ---------------------------------------------------------------------------
+_DEFAULT_JOBS = [
+    {
+        "user_id": "owner",
+        "prompt": (
+            "Give me a morning briefing. "
+            "Check today's calendar events using calendar_read (calendar: outlook). "
+            "List any pending or processing Summit Pine orders using sp_orders. "
+            "Check for low-stock inventory items using sp_inventory (action: list_low_stock). "
+            "List any pending to-do items using todo (action: list). "
+            "Summarise in 4-8 concise bullet points. "
+            "Skip any step that fails or is unavailable and continue with the rest."
+        ),
+        "interval_seconds": 86400,  # daily
+    },
+    {
+        "user_id": "owner",
+        "prompt": (
+            "Evening check-in: list all pending to-do items using todo (action: list). "
+            "Group by category (tasks, purchases, errands). "
+            "If the list is empty, say so in one line. "
+            "Keep the summary short."
+        ),
+        "interval_seconds": 43200,  # twice daily (12h)
+    },
+    {
+        "user_id": "owner",
+        "prompt": (
+            "Weekly Summit Pine operations review: "
+            "list inventory items below reorder point (sp_inventory, action: list_low_stock), "
+            "count pending and processing orders (sp_orders), "
+            "and show this month's expense summary (sp_costs, action: expense_summary). "
+            "Give me a 4-6 line status report."
+        ),
+        "interval_seconds": 604800,  # weekly
+    },
+]
+
+
+def seed_default_jobs(job_manager) -> int:
+    """Create default recurring jobs on first start. Idempotent — skips duplicates.
+
+    Safe to call on every startup: find_duplicate prevents re-creating jobs
+    that already exist in Redis.  Returns the number of new jobs created.
+    """
+    created = 0
+    for spec in _DEFAULT_JOBS:
+        if not job_manager.find_duplicate(spec["user_id"], spec["prompt"], "recurring"):
+            job_manager.create(
+                user_id=spec["user_id"],
+                prompt=spec["prompt"],
+                job_type="recurring",
+                interval_seconds=spec["interval_seconds"],
+            )
+            created += 1
+    if created:
+        tracing._emit("heartbeat", {"status": "seeded_jobs", "count": created})
+    return created
+
 
 async def heartbeat_loop(state) -> None:
     """Main heartbeat loop — runs forever, catching all exceptions per tick."""
@@ -112,15 +174,17 @@ async def _run_job(state, job) -> None:
             auto_approve=False,
             user_id=job["user_id"],
             max_iterations=state.max_tool_iterations,
+            channel=job.get("channel", "telegram"),
+            persona=job.get("persona", "default"),
         )
         state.job_manager.mark_complete(job_id, final_text[:200])
         if job["job_type"] == "recurring":
             state.job_manager.reschedule(job_id)
-        notify = f"✅ Job done: {job['prompt'][:60]}\n\n{final_text[:500]}"
+        notify = json.dumps({"text": f"✅ Job done: {job['prompt'][:60]}\n\n{final_text[:500]}"})
         tracing.log_job_event(job_id, "completed", user_id=job["user_id"])
     except Exception as e:
         state.job_manager.mark_failed(job_id, str(e))
-        notify = f"❌ Job failed: {job['prompt'][:60]}\nError: {e}"
+        notify = json.dumps({"text": f"❌ Job failed: {job['prompt'][:60]}\nError: {e}"})
         tracing.log_job_event(job_id, "failed", user_id=job["user_id"], error=str(e))
     finally:
         state.job_manager.release_lock(job_id)

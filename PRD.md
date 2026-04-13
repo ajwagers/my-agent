@@ -1,8 +1,8 @@
 # My-Agent: Product Requirements Document
 
-> **Last Updated:** 2026-03-13
+> **Last Updated:** 2026-03-24
 > **Owner:** Andy
-> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Model & embedding upgrades (post-4C): phi4-mini replaces phi3 as DEFAULT_MODEL; qwen3:8b replaces llama3.1:8b as REASONING_MODEL and TOOL_MODEL; dedicated CODING_MODEL (qwen3:8b, consolidated from codegemma) with separate coding keyword routing; OllamaEmbeddingFunction + nomic-embed-text replaces DefaultEmbeddingFunction across all ChromaDB paths; heartbeat extended with Ollama version watcher (notifies via Telegram when Ollama updates); Telegram gateway upgraded with Redis chat queue + background worker (immediate ack, sequential processing, asyncio-safe blocking calls); 503 error handling for model-level failures. Phase 4C-Part-2 complete: Redis-backed job queue with `create_task`/`list_tasks`/`cancel_task` skills, heartbeat wired to job executor, REST job endpoints, Redis SET NX lock prevents concurrent execution. Phase 4D complete: `calculate` (AST-based safe expression evaluator) and `convert_units` (pint-backed unit converter) skills added; tool-forcing signals for math and unit queries; 467 tests total. Post-4D patch: `web_search` upgraded — Brave Search API added as primary backend (LLM Context endpoint for general queries, standard web search for URL-containing queries); Tavily retained as automatic fallback; 471 tests total. Phase 4E complete: `python_exec` (sandboxed subprocess with two-agent safety review), `calendar_read`, `calendar_write` (Outlook via MS Graph + Proton via CalDAV), `calendar_auth` (MSAL device code flow) skills added; 524 tests total. Phase 5 complete: Mumble voice/text gateway — mumble-bot container with VAD (webrtcvad), STT (faster-whisper small/CPU/int8), TTS (Piper en_US-lessac-medium), Redis queue, approval relay, notification relay; 30 new tests. Phase 5 polish (post-5 patch): TTS markdown stripping (`_strip_for_speech`), voice-concise system prompt for mumble channel, PTT-flush VAD worker, `think=False` for qwen3:8b tool dispatch (requires ollama≥0.4.7), broadened `_REALTIME_SIGNAL`/`_REFUSAL_PATTERN` to catch political/leadership queries and confident-stale answers, search result trust hardening in system prompt, full migration from sync `ollama.Client` to `AsyncClient` (eliminates connection-pool hangs in background summarisation tasks). Next up: Phase 6 (proactive autonomy / scheduled agentic tasks) or hardware upgrade to unlock larger models.
+> **Status:** Active development — Phase 1 complete, Phase 2 complete (all chunks: 2A, 2B, 2C, 2D done). Phase 3 complete (3A, 3B, 3C done; 3D, 3E deferred). Security hardening applied post-Phase 3: Redis auth, API key on all state-changing/data-exposing endpoints, 127.0.0.1 port binding, bootstrap CLI gate, tracing sanitization hardening (URL credentials, auth headers, response previews). Phase 4A complete: skill framework with `web_search` (Tavily) and `rag_search` (ChromaDB) skills, full tool-calling loop, secret broker, and tool-calling reliability improvements (date injection, anti-hallucination prompt rules, auto-retry on refusal, richer tool descriptions). RAG embedding mismatch fixed + `rag_ingest` skill added (pre-4B patch): all ingestion and search now use ChromaDB's `DefaultEmbeddingFunction` consistently; agent can now add documents to its own knowledge base. Phase 4B complete: `url_fetch`, `file_read`, `file_write`, `pdf_parse` skills added; Redis-backed rate limiting replaces in-memory sliding window (durability across restarts). Phase 4C complete: three-layer persistent memory (Redis short-term + ChromaDB `agent_memory` long-term + working memory block in system prompt), `remember`/`recall` skills, memory sanitization with prompt-injection detection, auto-summarise truncated history, background heartbeat loop. Model & embedding upgrades (post-4C): phi4-mini replaces phi3 as DEFAULT_MODEL; qwen3:8b replaces llama3.1:8b as REASONING_MODEL and TOOL_MODEL; dedicated CODING_MODEL (qwen3:8b, consolidated from codegemma) with separate coding keyword routing; OllamaEmbeddingFunction + nomic-embed-text replaces DefaultEmbeddingFunction across all ChromaDB paths; heartbeat extended with Ollama version watcher (notifies via Telegram when Ollama updates); Telegram gateway upgraded with Redis chat queue + background worker (immediate ack, sequential processing, asyncio-safe blocking calls); 503 error handling for model-level failures. Phase 4C-Part-2 complete: Redis-backed job queue with `create_task`/`list_tasks`/`cancel_task` skills, heartbeat wired to job executor, REST job endpoints, Redis SET NX lock prevents concurrent execution. Phase 4D complete: `calculate` (AST-based safe expression evaluator) and `convert_units` (pint-backed unit converter) skills added; tool-forcing signals for math and unit queries; 467 tests total. Post-4D patch: `web_search` upgraded — Brave Search API added as primary backend (LLM Context endpoint for general queries, standard web search for URL-containing queries); Tavily retained as automatic fallback; 471 tests total. Phase 4E complete: `python_exec` (sandboxed subprocess with two-agent safety review), `calendar_read`, `calendar_write` (Outlook via MS Graph + Proton via CalDAV), `calendar_auth` (MSAL device code flow) skills added; 524 tests total. Phase 5 complete: Mumble voice/text gateway — mumble-bot container with VAD (webrtcvad), STT (faster-whisper small/CPU/int8), TTS (Piper en_US-lessac-medium), Redis queue, approval relay, notification relay; 30 new tests. Phase 5 polish (post-5 patch): TTS markdown stripping (`_strip_for_speech`), voice-concise system prompt for mumble channel, PTT-flush VAD worker, `think=False` for qwen3:8b tool dispatch (requires ollama≥0.4.7), broadened `_REALTIME_SIGNAL`/`_REFUSAL_PATTERN` to catch political/leadership queries and confident-stale answers, search result trust hardening in system prompt, full migration from sync `ollama.Client` to `AsyncClient` (eliminates connection-pool hangs in background summarisation tasks). Phase 6 complete: Open Brain MCP personal memory system (PostgreSQL + pgvector, nomic-embed-text 768-dim embeddings), identity file ingest with MD5 idempotency (SOUL.md/USER.md/IDENTITY.md/AGENTS.md auto-loaded at startup), three-layer privacy safeguard (skill execution gate + channel-aware memory middleware + system prompt directive), Mumble owner certificate authentication (cryptographic cert hash primary + username allowlist fallback, `mumble_owner` channel for trusted voice), Telegram `/remember` command, voice "save that" capture (direct brain POST from mumble-bot), Summit Pine business assistant skills (`sp_inventory`, `sp_orders`, `sp_faq`), `memory_capture`/`memory_search` skills backed by pgvector. Post-Phase-6 reliability patch: Telegram flood control prevention (`_throttled_send` enforces 1.1 s/msg rate limit, startup greeting and all send paths catch `RetryAfter` to prevent container crash loop), job deduplication in `JobManager.create()` (recurring jobs with identical prompt+user silently return existing ID), heartbeat `_run_job()` passes `channel=job.get("channel","telegram")` to `run_tool_loop()` enabling private-channel skills (calendar_read, memory_search, etc.) in scheduled jobs. Phase 7 complete (Summit Pine Operations Expansion): receipt ingestion via PDF upload in dashboard (pypdf text extraction); plain-text inventory/expense notes ingestion via dashboard Quick Ingest panel; labour hours tracking (`sp_time_log` skill + `sp_time_logs` DB table) — log by stated hours or start/end time, natural-language parsing via `_SIGNAL_HOURS`; production recipe management (`sp_recipes` skill + existing `recipes` DB table now fully wired); promotions and discount code management (`sp_promotions` skill + `sp_promotions` DB table); sales analytics dashboard tab (weekly revenue chart, top products, channel split, AOV); Streamlit dashboard expanded from 6 to 10 tabs (Hours, Sales, Recipes, Promos added); `USERS_MANUAL.md` created as end-user reference. Phase 8A complete: Prometheus metrics instrumentation in agent-core (`metrics.py`, `/metrics` endpoint, background gauge updater), Grafana operational dashboard (12 panels: request rate, queue depth, pending approvals, skill calls, policy decisions, response time p50/p95/p99, VRAM/GPU from Ollama native metrics), auto-provisioned via `grafana/provisioning/` (datasource + dashboard JSON), Prometheus scrapes agent-core and ollama-runner every 15s, 30-day TSDB retention. Streamlit health dashboard (`dashboard/`) retained for Redis log browsing but operational monitoring moves to Grafana at port 3000. Next up: Phase 8B+ or hardware upgrade to unlock larger models.
 
 ---
 
@@ -23,8 +23,8 @@ The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a 
 
 - Linux (primary), Mac, or Windows (WSL2)
 - GPU optional but strongly recommended — Ollama auto-detects CUDA; partial GPU offloading when VRAM < model size
-- 15 GB RAM minimum for current model stack (phi4-mini 2.5 GB, qwen3:8b 5.2 GB, qwen2.5:14b 9 GB)
-- NVIDIA GPU with 8+ GB VRAM ideal (GTX 1070 / 8 GB runs qwen3:8b at 74% GPU / 26% CPU split)
+- 16 GB RAM minimum for current model stack (phi4-mini 2.5 GB, gemma4:e4b ~9.6 GB, qwen2.5:14b 9 GB)
+- NVIDIA GPU with 8+ GB VRAM ideal (GTX 1070 / 8 GB runs gemma4:e4b at ~6 GB VRAM, 2 GB headroom)
 - Docker and Docker Compose (NVIDIA Container Toolkit required for GPU pass-through)
 
 ---
@@ -32,41 +32,41 @@ The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a 
 ## 2. Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        agent_net (Docker bridge)                │
-│                                                                 │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │ ollama-runner │    │  chroma-rag  │    │    redis     │       │
-│  │ (LLM engine) │    │  (vector DB) │    │  (active)    │       │
-│  │  :11434 int   │    │ :8000 int    │    │  :6379 int   │       │
-│  │  no host port │    │ :8100 host   │    │  no host port│       │
-│  └──────┬───────┘    └──────┬───────┘    └──────────────┘       │
-│         │                   │                                   │
-│         │ Ollama API        │ ChromaDB API                      │
-│         │                   │                                   │
-│  ┌──────┴───────────────────┴───────┐                           │
-│  │          agent-core              │                           │
-│  │     (FastAPI - central hub)      │                           │
-│  │       :8000 int & host           │                           │
-│  └──┬──────────────┬───────────┬────┘                           │
-│     │              │           │                                │
-│     │ /chat        │ /chat     │ /chat                          │
-│     │              │           │                                │
-│  ┌──┴─────┐  ┌─────┴────┐  ┌──┴──────────┐                     │
-│  │telegram │  │  web-ui  │  │    CLI      │                     │
-│  │-gateway │  │(Streamlit│  │(click, runs │                     │
-│  │         │  │  :8501)  │  │ in-container│                     │
-│  │no host  │  │host:8501 │  │ or host)    │                     │
-│  │port     │  │          │  │             │                     │
-│  └─────────┘  └──────────┘  └─────────────┘                     │
-│                                                                 │
-│  ┌──────────────┐                                               │
-│  │  dashboard   │  Reads logs from Redis, probes service health │
-│  │ (Streamlit   │                                               │
-│  │  :8502)      │                                               │
-│  │ host:8502    │                                               │
-│  └──────────────┘                                               │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          agent_net (Docker bridge)                       │
+│                                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │ ollama-runner │  │  chroma-rag  │  │    redis    │  │postgres-brain│  │
+│  │ (LLM engine) │  │  (vector DB) │  │  (active)   │  │(pgvector DB)│   │
+│  │  :11434 int   │  │ :8000 int    │  │  :6379 int  │  │  :5432 int  │   │
+│  │  no host port │  │ :8100 host   │  │  no host    │  │  no host    │   │
+│  └──────┬───────┘  └──────┬───────┘  └─────────────┘  └──────┬──────┘   │
+│         │                 │                                    │         │
+│         │ Ollama API      │ ChromaDB API          pgvector     │         │
+│         │                 │                                    │         │
+│  ┌──────┴─────────────────┴──────────┐    ┌────────────────────┴──────┐  │
+│  │          agent-core               │    │      open-brain-mcp       │  │
+│  │     (FastAPI - central hub)       │◄───│  (memory + identity MCP)  │  │
+│  │       :8000 int & host            │    │  :8002 int & host         │  │
+│  └──┬──────────────┬────────────┬────┘    └───────────────────────────┘  │
+│     │              │            │                                        │
+│     │ /chat        │ /chat      │ /chat                                  │
+│     │              │            │                                        │
+│  ┌──┴──────┐  ┌────┴─────┐  ┌──┴──────────┐  ┌────────────┐             │
+│  │telegram  │  │  web-ui  │  │    CLI      │  │ mumble-bot │             │
+│  │-gateway  │  │(Streamlit│  │(click, runs │  │(voice/text │             │
+│  │          │  │  :8501)  │  │ in-container│  │  gateway)  │             │
+│  │ no host  │  │host:8501 │  │ or host)    │  │  no host   │             │
+│  │ port     │  │          │  │             │  │  port      │             │
+│  └──────────┘  └──────────┘  └─────────────┘  └─────┬──────┘             │
+│                                                       │                  │
+│  ┌──────────────┐                              ┌──────┴──────┐           │
+│  │  dashboard   │  Reads logs from Redis,      │mumble-server│           │
+│  │ (Streamlit   │  probes service health        │  (Murmur)   │           │
+│  │  :8502)      │                              │:64738 host  │           │
+│  │ host:8502    │                              └─────────────┘           │
+│  └──────────────┘                                                        │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Service Map
@@ -74,11 +74,17 @@ The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a 
 | Service | Container Name | Image / Build | Internal Port | Host Port | Depends On |
 |---|---|---|---|---|---|
 | ollama-runner | ollama-runner | `ollama/ollama:latest` | 11434 | none | - |
-| agent-core | agent-core | `./agent-core` (build) | 8000 | 8000 | ollama-runner (healthy), redis |
+| postgres-brain | postgres-brain | `pgvector/pgvector:pg16` | 5432 | none | - |
+| open-brain-mcp | open-brain-mcp | `./open-brain-mcp` (build) | 8002 | 8002 | postgres-brain, ollama-runner (healthy) |
+| agent-core | agent-core | `./agent-core` (build) | 8000 | 8000 | ollama-runner (healthy), redis, open-brain-mcp |
 | telegram-gateway | telegram-gateway | `./telegram-gateway` (build) | - | none | agent-core (healthy), redis |
+| mumble-server | mumble-server | `mumblevoip/mumble-server:latest` | 64738 | 64738 (TCP+UDP) | - |
+| mumble-bot | mumble-bot | `./mumble-bot` (build) | - | none | agent-core, redis |
 | chroma-rag | chroma-rag | `chromadb/chroma:latest` | 8000 | 8100 | - |
 | web-ui | web-ui | `./web-ui` (build) | 8501 | 8501 | agent-core, chroma-rag |
 | dashboard | dashboard | `./dashboard` (build) | 8502 | 8502 | redis |
+| prometheus | prometheus | `prom/prometheus:latest` | 9090 | none | - |
+| grafana | grafana | `grafana/grafana:latest` | 3000 | 3000 | prometheus |
 | redis | redis | `redis:alpine` | 6379 | none | - |
 
 ### Volume Mounts
@@ -87,6 +93,7 @@ The project is inspired by the Openclaw (formerly Moltbot/Clawdbot) approach: a 
 |---|---|---|---|
 | Dedicated drive (host) | `/sandbox` | Agent's playground — experiments, scripts, scratch files, daily logs | Full read/write/delete |
 | Named volume or host dir | `/agent` | Identity files — SOUL.md, IDENTITY.md, USER.md, MEMORY.md | Read freely, write only with owner approval |
+| Named volume `brain_data` | (postgres-brain) | PostgreSQL + pgvector data for Open Brain MCP personal memory | Managed by postgres-brain service |
 | (Container filesystem) | Everything else | OS, agent-core code, config, Dockerfiles | Read-only (limited), no writes |
 
 ### Four-Zone Permission Model
@@ -146,11 +153,18 @@ User input (Telegram / Web UI / CLI)
   → POST http://agent-core:8000/chat
     body: { message, model (optional), user_id, channel, auto_approve }
   → Load identity files from /agent (hot-reload on every request)
+  → build_brain_context(message, channel): query Open Brain MCP for relevant memories
+      - Searches thoughts (personal memories, captured facts) and household data
+      - Private channels (telegram, cli, mumble_owner): full access including identity files and household data
+      - Non-private channels (mumble, web-ui): personal/identity thoughts filtered out; household data suppressed
+      - Result injected as "## Relevant Memory" block in system prompt (silent if brain unavailable)
   → build_system_prompt():
       - Prepend current date/time (UTC) as first line
       - bootstrap mode: BOOTSTRAP.md + AGENTS.md
       - normal mode: SOUL.md + AGENTS.md + USER.md
+      - Inject brain context block (channel-filtered)
       - If skills registered: append Tool Usage rules (when to search, anti-hallucination rules)
+      - Non-private channels: append Privacy Policy directive (personal data restricted)
   → route_model() selects model:
       - model="deep" alias → DEEP_MODEL (qwen2.5:14b, 32K ctx)
       - model="reasoning" alias → REASONING_MODEL (qwen3:8b)
@@ -193,9 +207,8 @@ User input (Telegram / Web UI / CLI)
 - GPU pass-through via NVIDIA Container Toolkit (`deploy.resources.reservations.devices`)
 - Models:
   - `phi4-mini:latest` (3.8B params, 2.5 GB) — DEFAULT_MODEL for fast general tasks
-  - `qwen3:8b` (8B params, 5.2 GB on disk / ~10 GB loaded) — REASONING_MODEL + TOOL_MODEL; 74% GPU / 26% CPU on GTX 1070
+  - `gemma4:e4b` (4.5B effective params / 26B MoE, ~9.6 GB) — REASONING_MODEL + TOOL_MODEL + CODING_MODEL; native function calling, 128K context; ~6 GB VRAM on GTX 1070
   - `qwen2.5:14b` (14B params, 9 GB) — DEEP_MODEL for long-context tasks (32K ctx)
-  - `qwen3:8b` — also serves as CODING_MODEL for code/debug/implement tasks (consolidated; codegemma removed — does not support Ollama tool calling)
   - `nomic-embed-text` (274 MB) — embedding model for ChromaDB (OllamaEmbeddingFunction)
 - Persistent volume `ollama_data` at `/root/.ollama`
 - Healthcheck: `ollama list` every 30s
@@ -205,7 +218,7 @@ User input (Telegram / Web UI / CLI)
 
 ### 3.2 agent-core
 
-**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, skill framework with 13 skills: web_search + rag_search + rag_ingest + url_fetch + file_read + file_write + pdf_parse + remember + recall + create_task + list_tasks + cancel_task + calculate + convert_units, Redis-backed rate limiting, three-layer persistent memory, background heartbeat loop with Ollama version watcher, Redis-backed job queue, multi-model routing with dedicated CODING_MODEL, OllamaEmbeddingFunction + nomic-embed-text embeddings, tool-forcing signals, and 503 error handling for model failures)**
+**Status: WORKING (with policy engine, identity system, bootstrap, structured tracing, full endpoint auth coverage, bootstrap channel gate, skill framework with 27 skills: web_search + rag_search + rag_ingest + url_fetch + file_read + file_write + pdf_parse + remember + recall + create_task + list_tasks + cancel_task + calculate + convert_units + python_exec + calendar_read + calendar_write + memory_capture + memory_search + sp_inventory + sp_orders + sp_faq + sp_costs + sp_time_log + sp_recipes + sp_promotions + create_persona + list_personas + delete_persona + switch_persona, Redis-backed rate limiting, three-layer persistent memory (Redis + ChromaDB + Open Brain MCP pgvector), background heartbeat loop with Ollama version watcher, Redis-backed job queue, multi-model routing with dedicated CODING_MODEL, OllamaEmbeddingFunction + nomic-embed-text embeddings, tool-forcing signals, 503 error handling, three-layer privacy safeguard with channel-aware memory injection, and 524+ tests)**
 
 The central hub. FastAPI service that wraps Ollama, with policy engine, approval system, identity loader, conversational bootstrap, structured JSON tracing, API key authentication on state-changing endpoints, CLI-only gate on bootstrap mode, a modular skill framework supporting Ollama tool calling, and a background heartbeat loop for autonomous monitoring.
 
@@ -234,9 +247,23 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `skills/cancel_task.py` | `CancelTaskSkill` — cancel a job by ID. Removes from Redis job queue. LOW risk, no approval, rate-limited (10/min). |
 | `skills/calculate.py` | `CalculateSkill` — safe AST-based expression evaluator. Whitelists 7 binary ops, 2 unary ops, 4 constants (pi/e/tau/inf), and 20 math functions. No `eval()`. Returns `{"result": value}` or `{"error": ...}`. LOW risk, no approval, rate-limited (50/min), max 5 calls/turn. |
 | `skills/convert_units.py` | `ConvertUnitsSkill` — pint-backed unit converter. Handles length, mass, temperature, speed, volume, and all other pint-supported units. Typed error handling for incompatible dimensions, unknown units, and temperature offset calculus. LOW risk, no approval, rate-limited (50/min), max 5 calls/turn. |
+| `skills/python_exec.py` | `PythonExecSkill` — sandboxed subprocess Python execution in /sandbox. Two-agent safety review (REASONING_MODEL) before approval. Minimal env (no API keys). Timeout 30s, temp file cleaned in finally. HIGH risk, always requires approval, rate-limited (3/min). |
+| `skills/calendar_read.py` | `CalendarReadSkill` — list upcoming events from Outlook (MS Graph) or Proton (CalDAV). LOW risk, no approval, `private_channels={"telegram","cli"}` (personal data gate). Rate-limited (20/min). |
+| `skills/calendar_write.py` | `CalendarWriteSkill` — create/update/delete calendar events. HIGH risk, requires_approval=True, `private_channels={"telegram","cli"}`. Rate-limited (5/min). |
+| `skills/memory_capture.py` | `MemoryCaptureSkill` — store a thought/fact to Open Brain MCP pgvector store. LOW risk, no approval, rate-limited (20/min). |
+| `skills/memory_search.py` | `MemorySearchSkill` — semantic search over Open Brain MCP thoughts via pgvector. LOW risk, no approval, `private_channels={"telegram","cli","mumble_owner"}`. Rate-limited (20/min). |
+| `skills/sp_inventory.py` | `SpInventorySkill` — query Summit Pine inventory data. LOW risk, no approval, rate-limited (20/min). |
+| `skills/sp_orders.py` | `SpOrdersSkill` — look up Summit Pine order details. LOW risk, no approval, `private_channels={"telegram","cli"}`, rate-limited (20/min). |
+| `skills/sp_faq.py` | `SpFaqSkill` — retrieve Summit Pine FAQ and product info. LOW risk, no approval, rate-limited (30/min). |
+| `skills/sp_costs.py` | `SummitPineCostsSkill` — expense tracking, COGS, and P&L. Actions: log_expense, list_expenses, expense_summary, batch_cogs, profit_summary. LOW risk, no approval, rate-limited (20/min). |
+| `skills/sp_time_log.py` | `SummitPineTimeLogSkill` — labour hour tracking. Actions: log_hours (parse start/end time or stated hours), list_hours, time_summary. Natural-language time parsing (e.g. "started at 9am ended at 2pm"). LOW risk, no approval, rate-limited (20/min). |
+| `skills/sp_recipes.py` | `SummitPineRecipesSkill` — production recipe management. Actions: add, get, list (filterable by tag), update, delete. Ingredients as [{name, amount, unit}] JSON. LOW risk, no approval, rate-limited (20/min). |
+| `skills/sp_promotions.py` | `SummitPinePromotionsSkill` — discount code and promotion management. Actions: create, list (active_only default), get, update, deactivate. Discount types: percent, fixed_amount, free_shipping, buy_x_get_y. LOW risk, no approval, rate-limited (20/min). |
 | `memory.py` | `MemoryStore` — ChromaDB wrapper for `agent_memory` collection. Methods: `add()`, `search()`, `get_recent()`. Separate from `rag_data`; metadata schema: `{user_id, type, source, timestamp}`. |
+| `memory_middleware.py` | `build_brain_context(message, channel)` — async function that queries Open Brain MCP for relevant memories and returns a formatted context block. Channel-aware: personal thoughts (identity_file source, owner_profile/agent_soul types) are filtered out for non-private channels. Household data suppressed on non-private channels. Fails silently if brain unavailable. |
 | `memory_sanitizer.py` | `sanitize(content)` — strips null bytes, control chars, HTML tags; detects 8 prompt-injection patterns (ordered: injection check BEFORE HTML strip). Raises `MemoryPoisonError(ValueError)` on detection. |
-| `heartbeat.py` | Background asyncio loop started via `@app.on_event("startup")`. Ticks every `HEARTBEAT_INTERVAL` seconds (default 60). Logs each tick via `tracing._emit`. On each tick: polls `OLLAMA_HOST/api/version`, stores last-seen version in Redis (`heartbeat:ollama_version`); publishes upgrade notification to `notifications:agent` channel when version changes (includes pull command for `WATCH_MODEL`). Catches all exceptions to stay alive. |
+| `calendar_auth.py` | MSAL device code flow for MS Graph. Token cache at `/agent/ms_token_cache.bin`. Provides `get_access_token()` for calendar skills. |
+| `heartbeat.py` | Background asyncio loop started via `@app.on_event("startup")`. Ticks every `HEARTBEAT_INTERVAL` seconds (default 60). Logs each tick via `tracing._emit`. On each tick: polls `OLLAMA_HOST/api/version`, stores last-seen version in Redis (`heartbeat:ollama_version`); publishes upgrade notification to `notifications:agent` channel when version changes (includes pull command for `WATCH_MODEL`). Fires due jobs via `_run_job()`: runs the full `run_tool_loop()` with `channel=job.get("channel","telegram")` — defaults to `"telegram"` so private-channel skills (calendar_read, memory_search) are available in scheduled jobs. Catches all exceptions to stay alive. |
 | `tracing.py` | Structured JSON tracing: context vars for trace IDs, JSON log formatter, Redis log storage (`logs:all` + type-specific lists), event emitters for chat/skill/policy/approval/heartbeat, enhanced sanitization, query helper for dashboard. `log_skill_call()` captures `skill_name`, `status`, `duration_ms`. |
 | `policy.yaml` | Zone rules, Redis-backed rate limits (including `rag_search`, `web_search`, `url_fetch`, `file_read`, `file_write`, `pdf_parse`, `remember`, `recall`), approval settings, denied URL patterns (mounted read-only) |
 | `policy.py` | Central policy engine: 4-zone model, hard-coded deny-list, rate limiting, access checks |
@@ -248,7 +275,7 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 | `agent` | Shell wrapper (`#!/bin/bash`) so `agent chat "msg"` works on PATH |
 | `Dockerfile` | Python 3.12, installs deps, copies CLI to `/usr/local/bin/agent` |
 | `requirements.txt` | fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml, pypdf, beautifulsoup4, pint |
-| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills, memory, heartbeat, jobs), runnable without Docker — **471 tests total** |
+| `tests/` | Unit tests (policy, approval, identity, bootstrap, tracing, skills, memory, heartbeat, jobs), runnable without Docker — **524 tests total** |
 | `tests/test_memory.py` | 21 tests: `TestMemorySanitizer` (injection detection, HTML strip, control chars) + `TestMemoryStore` (add, search, get_recent, error propagation), all using sys.modules mocking. |
 | `tests/test_heartbeat.py` | 4 tests: tick invokes tracing, exception caught (loop continues), returns asyncio.Task, cancellation raises CancelledError. |
 | `tests/test_jobs.py` | Tests for job queue, create_task/list_tasks/cancel_task skills, job executor in heartbeat, and job REST endpoints. |
@@ -280,12 +307,12 @@ The central hub. FastAPI service that wraps Ollama, with policy engine, approval
 
 **Model routing (`route_model()` + skill override):**
 - `model="deep"` → resolves to `DEEP_MODEL` (qwen2.5:14b, 32K ctx)
-- `model="reasoning"` → resolves to `REASONING_MODEL` (qwen3:8b)
-- `model="code"` → resolves to `CODING_MODEL` (qwen3:8b)
+- `model="reasoning"` → resolves to `REASONING_MODEL` (gemma4:e4b)
+- `model="code"` → resolves to `CODING_MODEL` (gemma4:e4b)
 - `model=<any other value>` → used as-is (client override)
 - `model=null` (default) with skills registered → checked for coding keywords first, then defaults to TOOL_MODEL:
-  - Coding keywords match → `CODING_MODEL` (qwen3:8b, 32K ctx)
-  - No coding keywords → `TOOL_MODEL` (qwen3:8b)
+  - Coding keywords match → `CODING_MODEL` (gemma4:e4b, 128K ctx)
+  - No coding keywords → `TOOL_MODEL` (gemma4:e4b)
 - `model=null` with no skills → keyword heuristic: coding keywords → `CODING_MODEL`; reasoning keywords → `REASONING_MODEL`; else → `DEFAULT_MODEL`
 - Coding keywords: `code`, `debug`, `implement`, `refactor`, `function`, `class`, `script`, `bug`, `fix`, `test`, `write a program/script/function/class/test`, `unit test`
 - Reasoning keywords: `explain`, `analyze`, `plan`, `why`, `compare`, `reason`, `think`, `step by step`, `how does`, `what if`
@@ -314,16 +341,18 @@ Thin adapter that receives Telegram messages, forwards to agent-core, and replie
 | `requirements.txt` | python-telegram-bot, requests, redis |
 
 **Features:**
-- **Boot greeting** via `post_init` - sends a time-aware greeting message when the stack comes up
+- **Boot greeting** via `post_init` - sends a time-aware greeting message when the stack comes up. Failure (e.g. Telegram flood control) is caught and logged — does not crash the container.
 - **Chat ID filtering** - only responds to the owner's chat ID (set via `CHAT_ID` env var)
-- **Redis chat queue** - incoming messages are pushed to Redis list `queue:chat` rather than blocking the handler. Worker processes jobs one at a time via `asyncio.to_thread` (non-blocking event loop). Immediate acknowledgement sent to user: `"⏳ On it..."` or `"⏳ Model is busy, you're #N in queue"` based on current queue depth + active flag (`queue:chat:active`).
-- **Queue worker** (`_queue_worker`) - background asyncio task started in `post_init`. Pops jobs from queue, sets `queue:chat:active` flag, runs agent HTTP call in thread, cancels flag, sends response as reply to original message. Falls back to non-reply send if original message was deleted.
+- **Redis chat queue** - incoming messages are pushed to Redis list `queue:chat` rather than blocking the handler. Worker processes jobs one at a time via `asyncio.to_thread` (non-blocking event loop). Immediate acknowledgement sent to user: `"⏳ On it..."` or `"⏳ Model is busy, you're #N in queue"` based on current queue depth + active flag (`queue:chat:active`). Ack send failure is caught so the handler never crashes.
+- **Queue worker** (`_queue_worker`) - background asyncio task started in `post_init`. Pops jobs from queue, sets `queue:chat:active` flag, runs agent HTTP call in thread, cancels flag, sends response via `_throttled_send`. Falls back to non-reply send if original message was deleted. Both primary and fallback send errors are caught so the worker survives Telegram outages.
+- **Rate-limited sends** (`_throttled_send`) - shared async helper used by all outgoing `send_message` calls. Enforces a 1.1 s minimum gap between messages (protected by `asyncio.Lock`) to stay within Telegram's ~1 msg/sec per-chat limit and prevent flood control bans.
 - **Auto-routing** - does not send a model to agent-core, allowing server-side auto-routing
-- **Typing indicator** - refreshed every 4 seconds while worker processes a request (now correctly non-blocking via `asyncio.to_thread`)
+- **Typing indicator** - refreshed every 4 seconds while worker processes a request (correctly non-blocking via `asyncio.to_thread`)
 - **Message chunking** - splits long responses at line breaks/spaces to stay under Telegram's 4096 char limit
-- **Approval inline keyboards** (Chunk 3A) - subscribes to Redis `approvals:pending` channel, shows Approve/Deny buttons with risk-level emoji, writes resolution back to Redis hash
+- **Approval inline keyboards** - subscribes to Redis `approvals:pending` channel, shows Approve/Deny buttons with risk-level emoji, writes resolution back to Redis hash
 - **Approval catch-up** - on startup, scans for any pending approvals missed during downtime and re-sends them
-- **Agent notifications** - subscribes to Redis `notifications:agent` channel and forwards messages to owner (used by heartbeat for Ollama version update alerts)
+- **Agent notifications** - subscribes to Redis `notifications:agent` channel and forwards messages to owner via `_throttled_send` (used by heartbeat for Ollama version update alerts and job completion/failure notifications)
+- **`/remember` command** - Telegram slash command that captures a thought directly to Open Brain MCP memory. Usage: `/remember Andy prefers tea over coffee`. Pushed to Redis queue so it is processed in order with normal messages. Response: `"📝 Saving to memory..."`
 - **No host ports** - outbound only to Telegram API + internal to agent-core + Redis
 
 **Environment variables (from `.env` and `docker-compose.yml`):**
@@ -417,7 +446,111 @@ Streamlit-based health dashboard providing real-time operational visibility.
 - Used by agent-core for conversation history storage (per user_id session keys)
 - Used by agent-core + telegram-gateway for approval gate (hash storage + pub/sub)
 - Used by agent-core for structured log storage (`logs:all` firehose + `logs:chat`, `logs:skill`, `logs:policy`, `logs:approval` type-specific lists)
-- Intended future use: job queue, scheduled tasks, memory state
+- Used by agent-core for Redis-backed job queue (`jobs:*` hash keys) and heartbeat job executor
+- Used by mumble-bot for voice/text job queue (`queue:mumble`) and progress tick pub/sub
+
+---
+
+### 3.8 postgres-brain
+
+**Status: WORKING**
+
+- `pgvector/pgvector:pg16` image — PostgreSQL 16 with the pgvector extension for vector similarity search
+- Connected to `agent_net`, no host port (internal only)
+- Persistent volume `brain_data` at `/var/lib/postgresql/data`
+- Database: `brain`, user: `brain`, password via `BRAIN_POSTGRES_PASSWORD`
+- Used exclusively by `open-brain-mcp` service
+
+---
+
+### 3.9 open-brain-mcp
+
+**Status: WORKING**
+
+FastAPI service providing a personal semantic memory store backed by PostgreSQL + pgvector with nomic-embed-text 768-dim embeddings. Implements the Model Context Protocol (MCP) SSE endpoint in addition to a plain REST API.
+
+**Features:**
+- **Personal memory store** — stores `thoughts` rows with content, 768-dim vector embedding, source, metadata, and timestamps. Vector similarity search via pgvector HNSW indexes.
+- **Household data** — structured tables for `household_facts` (key-value facts about home, family, preferences), `calendar_events`, `locations`, and `notes`.
+- **Identity file ingest** — startup background task reads SOUL.md, USER.md, IDENTITY.md, AGENTS.md from `/agent/` (read-only mount). MD5 hash idempotency: only re-embeds when file changes. Creates/updates rows in `thoughts` with `source='identity_file'` and metadata `{type, file, hash}`.
+- **`POST /tools/reingest_identity`** — force re-ingest all identity files without restart.
+- **`POST /tools/capture_thought`** — add a new thought to memory (used by `/remember` Telegram command and voice "save that").
+- **`POST /tools/recall`** — semantic search over thoughts. Returns top-N results sorted by cosine similarity.
+- **MCP SSE endpoint** — `/mcp` SSE stream for Model Context Protocol tool use (for future MCP client integration).
+- **Channel-aware access** — personal thoughts and household data are only injected into agent-core context for private channels (telegram, cli, mumble_owner).
+
+**Port:** `127.0.0.1:8002:8002` (host-accessible for diagnostics; agent-core reaches it via `http://open-brain-mcp:8002`)
+
+---
+
+### 3.10 mumble-server
+
+**Status: WORKING**
+
+- `mumblevoip/mumble-server:latest` (Murmur) — the Mumble VoIP server
+- Ports `64738:64738` TCP (control channel) and `64738:64738/udp` (voice traffic)
+- Persistent volume `mumble_data` at `/data`
+- SuperUser password via `MUMBLE_SUPERUSER_PASSWORD` env var
+- Optional server password via `MUMBLE_SERVER_PASSWORD` (if set, clients must enter it to join)
+
+---
+
+### 3.11 mumble-bot
+
+**Status: WORKING**
+
+Python bot that bridges Mumble voice/text chat to agent-core. Same gateway pattern as telegram-gateway.
+
+**Files:**
+
+| File | Purpose |
+|---|---|
+| `bot.py` | Main bot: pymumble_py3 connection, VAD callbacks, STT/TTS pipeline, Redis queue worker, approval relay, agent-notification relay, owner auth, "save that" capture |
+| `vad.py` | `VoiceActivityDetector` — webrtcvad frame buffering, silence-timeout detection, PTT-flush worker (runs every 300ms) |
+| `stt.py` | `SpeechToText` — faster-whisper small/CPU/int8, WAV decode, transcription with confidence filter |
+| `tts.py` | `TextToSpeech` — Piper en_US-lessac-medium.onnx, `_strip_for_speech()` removes all markdown before synthesis |
+| `Dockerfile` | Python 3.12-slim + system audio deps + Piper + Whisper small (pre-downloaded at build) |
+| `requirements.txt` | pymumble_py3, faster-whisper, pyaudio, webrtcvad, requests, redis |
+| `tests/` | 30 tests: 10 VAD + 5 STT + 5 TTS + 10 bot |
+
+**Features:**
+- **Voice Activity Detection** — webrtcvad (mode 3) with configurable silence timeout. PTT-flush worker runs every 300ms to emit audio that didn't hit silence timeout (handles PTT releases).
+- **Mumble owner authentication** — two-layer trust:
+  - **Certificate hash (primary):** `MUMBLE_OWNER_CERT_HASH` env var — cryptographically unforgeable via pymumble_py3 UserState `hash` field. If set, only the user with this cert fingerprint gets `channel="mumble_owner"`.
+  - **Username allowlist (fallback):** `MUMBLE_OWNER_USERNAMES` — used when cert hash is not yet configured.
+  - Hash discovery: on first connect, bot logs `MUMBLE_OWNER_CERT_HASH=<hash>` when owner matches by username — copy this value to `.env` for stronger auth.
+- **`mumble_owner` channel** — trusted Mumble users (owner cert or allowlist) are tagged as `channel="mumble_owner"`, giving them the same full private data access as Telegram. Untrusted users get `channel="mumble"` (public, personal data restricted).
+- **Voice "save that"** — regex detects "save that"/"remember that"/"add that to memory" in voice transcript. Directly POSTs last bot response to `BRAIN_URL/tools/capture_thought` (bypasses agent-core for speed).
+- **Progress ticks** — `_call_agent_with_progress()` sends Mumble text message ticks at 30s, 90s, 180s while agent is thinking.
+- **Voice system prompt** — when channel is `mumble` or `mumble_owner`, appends concise voice guidelines: 1-4 sentences, plain prose, no markdown.
+- **`_strip_for_speech()`** — strips all markdown (code blocks, bullets, headers, bold/italic, HTML) before Piper TTS.
+
+---
+
+## 3.12 Privacy Safeguards (Channel Trust Model)
+
+Personal data is restricted to channels where the owner's identity is verified. Three independent layers ensure no single point of failure.
+
+### Trusted Channels (Private)
+
+| Channel | Source | Trust Level | Data Access |
+|---|---|---|---|
+| `telegram` | Telegram gateway (filtered by CHAT_ID) | Owner-verified | Full: personal data, identity files, household facts, calendar |
+| `cli` | CLI running in container (requires host access) | Owner-verified | Full |
+| `mumble_owner` | Mumble bot (cert hash or username allowlist match) | Owner-verified | Full |
+| `mumble` | Mumble bot (untrusted/guest user) | Unverified | Public only |
+| (others) | web-ui, future gateways | Unverified | Public only |
+
+### Three Layers
+
+**Layer 1 — Skill Execution Gate** (`skill_runner.py`): Skills with `private_channels` set will immediately return an error message (no data fetched) if the request channel is not in the allowed set. Applies to: `calendar_read`, `calendar_write`, `recall`, `memory_search`, `sp_orders`.
+
+**Layer 2 — Memory Middleware** (`memory_middleware.py`): `build_brain_context()` filters results by channel before injecting into the system prompt:
+- Non-private channels: identity_file thoughts suppressed (SOUL.md, USER.md, IDENTITY.md, AGENTS.md)
+- Non-private channels: thoughts with personal metadata types (`owner_profile`, `agent_soul`, `agent_identity`, `agent_directives`) suppressed
+- Non-private channels: household data API call skipped entirely
+
+**Layer 3 — System Prompt Directive** (`app.py`): For non-private channels, an explicit privacy policy block is appended to the system prompt naming exactly what must never be shared (owner details, calendar, household facts, memory, identity files, business order details) and providing the canonical refusal phrase.
 
 ---
 
@@ -431,13 +564,13 @@ my-agent/
 ├── agent-core/
 │   ├── Dockerfile              # Python 3.12, CLI on PATH
 │   ├── requirements.txt        # fastapi, uvicorn, ollama, click, requests, chromadb, redis, pyyaml
-│   ├── app.py                  # FastAPI: /chat, /health, /bootstrap/status, /chat/history, /policy/reload, /approval/*
+│   ├── app.py                  # FastAPI: /chat, /health, /metrics (Prometheus), /bootstrap/status, /chat/history, /policy/reload, /approval/*; _update_gauges() background task
 │   ├── cli.py                  # Click CLI: chat, serve commands
 │   ├── skill_runner.py         # execute_skill() pipeline + run_tool_loop() Ollama tool-call driver
 │   ├── secret_broker.py        # get(key) — reads env var at call time, never exposes to LLM
 │   ├── memory.py               # MemoryStore — ChromaDB agent_memory wrapper (add, search, get_recent)
 │   ├── memory_sanitizer.py     # sanitize() — strips control chars/HTML, detects prompt injection, raises MemoryPoisonError
-│   ├── heartbeat.py            # Background asyncio heartbeat loop (start_heartbeat, _tick, configurable interval)
+│   ├── heartbeat.py            # Background asyncio heartbeat loop (start_heartbeat, _tick, configurable interval). _run_job() passes channel=job.get("channel","telegram") enabling private-channel skills in scheduled jobs.
 │   ├── skills/
 │   │   ├── __init__.py         # Package marker
 │   │   ├── base.py             # SkillMetadata dataclass + abstract SkillBase class
@@ -455,11 +588,26 @@ my-agent/
 │   │   ├── list_tasks.py       # ListTasksSkill — list scheduled jobs for current user
 │   │   ├── cancel_task.py      # CancelTaskSkill — cancel a job by ID
 │   │   ├── calculate.py        # CalculateSkill — AST-based safe math evaluator (no eval(), whitelisted functions)
-│   │   └── convert_units.py    # ConvertUnitsSkill — pint unit converter (length, mass, temp, speed, volume, etc.)
-│   ├── job_manager.py          # JobManager — Redis-backed job queue (CRUD, due-job query, lock management)
+│   │   ├── convert_units.py    # ConvertUnitsSkill — pint unit converter (length, mass, temp, speed, volume, etc.)
+│   │   ├── python_exec.py      # PythonExecSkill — sandboxed subprocess execution, two-agent safety review, HIGH risk
+│   │   ├── calendar_read.py    # CalendarReadSkill — list Outlook/Proton calendar events, private_channels gate
+│   │   ├── calendar_write.py   # CalendarWriteSkill — create/update/delete calendar events, requires_approval, private_channels gate
+│   │   ├── memory_capture.py   # MemoryCaptureSkill — store thought to Open Brain MCP pgvector
+│   │   ├── memory_search.py    # MemorySearchSkill — semantic search over Open Brain MCP thoughts, private_channels gate
+│   │   ├── sp_inventory.py     # SpInventorySkill — Summit Pine inventory lookup
+│   │   ├── sp_orders.py        # SpOrdersSkill — Summit Pine order lookup, private_channels gate
+│   │   ├── sp_faq.py           # SpFaqSkill — Summit Pine FAQ and product info
+│   │   ├── sp_costs.py         # SummitPineCostsSkill — expense tracking, COGS, P&L
+│   │   ├── sp_time_log.py      # SummitPineTimeLogSkill — labour hour tracking (log_hours/list_hours/time_summary)
+│   │   ├── sp_recipes.py       # SummitPineRecipesSkill — production recipe CRUD
+│   │   └── sp_promotions.py    # SummitPinePromotionsSkill — discount code and promotion management
+│   ├── calendar_auth.py        # MSAL device code flow for MS Graph token cache (/agent/ms_token_cache.bin)
+│   ├── job_manager.py          # JobManager — Redis-backed job queue (CRUD, due-job query, lock management). Deduplicates recurring jobs: create() returns existing ID if identical prompt+user already active.
 │   ├── job_endpoints.py        # REST router: GET /jobs, GET /jobs/{id}, DELETE /jobs/{id}
-│   ├── tracing.py              # Structured JSON tracing: context vars, event emitters, Redis log storage
-│   ├── policy.yaml             # Zone rules, Redis-backed rate limits (all 13 skills), approval config (read-only mount)
+│   ├── memory_middleware.py    # build_brain_context() — channel-aware brain query; filters personal thoughts for non-private channels
+│   ├── metrics.py              # Prometheus metrics: Counters (chat, skill, policy, approval), Histogram (response_ms), Gauges (queue_depth, pending_approvals)
+│   ├── tracing.py              # Structured JSON tracing: context vars, event emitters, Redis log storage; increments Prometheus counters/histograms at emit time
+│   ├── policy.yaml             # Zone rules, Redis-backed rate limits (all 27 skills), approval config (read-only mount)
 │   ├── policy.py               # Central policy engine (zones, deny-list, rate limits)
 │   ├── approval.py             # Approval gate manager (Redis hash + pub/sub + proposed_content + tracing hooks)
 │   ├── approval_endpoints.py   # REST router: /approval/pending, /{id}, /{id}/respond
@@ -475,7 +623,7 @@ my-agent/
 │       ├── test_identity.py    # Identity loader tests: bootstrap detection, file loading, prompt building
 │       ├── test_bootstrap.py   # Bootstrap parser tests: proposal extraction, validation, completion, approval integration
 │       ├── test_tracing.py     # 55 tests: trace context, JSON format, chat/skill/policy/approval logging, retention, resilience, sanitization
-│       ├── test_skills.py      # 207 tests: SkillBase, SkillRegistry, execute_skill pipeline, all 13 skills, SecretBroker, run_tool_loop
+│       ├── test_skills.py      # 207+ tests: SkillBase, SkillRegistry, execute_skill pipeline, all 21 skills, SecretBroker, run_tool_loop
 │       ├── test_memory.py      # 21 tests: MemorySanitizer (injection detection, HTML, control chars) + MemoryStore (add, search, get_recent)
 │       ├── test_heartbeat.py   # 4 tests: tick→tracing, exception caught, returns Task, cancellation propagates
 │       └── test_jobs.py        # Tests for job queue, task skills, job executor in heartbeat, REST endpoints
@@ -486,11 +634,27 @@ my-agent/
 │   ├── IDENTITY.md             # Structured fields: name, nature, vibe, emoji
 │   ├── USER.md                 # Owner profile: name, preferences, timezone
 │   └── AGENTS.md               # Operating instructions (static rules)
+│                               # Note: ms_token_cache.bin (MSAL token) lives here but is .gitignored
 │
 ├── telegram-gateway/
 │   ├── Dockerfile              # Python 3.12-slim
 │   ├── requirements.txt        # python-telegram-bot, requests, redis
-│   └── bot.py                  # Telegram bot: Redis chat queue + background worker, immediate ack, greeting, typing, chunking, approval callbacks, agent notifications
+│   └── bot.py                  # Telegram bot: Redis chat queue + background worker, immediate ack, greeting, typing, chunking, approval callbacks, agent notifications, /remember command. _throttled_send() enforces 1.1 s/msg rate limit; all send paths catch RetryAfter to prevent crash loops.
+│
+├── mumble-bot/
+│   ├── Dockerfile              # Python 3.12-slim + audio deps + Piper + Whisper small (pre-downloaded)
+│   ├── requirements.txt        # pymumble_py3, faster-whisper, pyaudio, webrtcvad, requests, redis
+│   ├── bot.py                  # Main bot: Mumble connection, VAD callbacks, STT/TTS pipeline, Redis queue worker, owner auth (cert hash + username), "save that" capture
+│   ├── vad.py                  # VoiceActivityDetector: webrtcvad frame buffering, silence timeout, PTT-flush worker
+│   ├── stt.py                  # SpeechToText: faster-whisper small/CPU/int8, WAV decode, transcription
+│   ├── tts.py                  # TextToSpeech: Piper en_US-lessac-medium.onnx, _strip_for_speech() markdown stripper
+│   └── tests/                  # 30 tests: 10 VAD + 5 STT + 5 TTS + 10 bot
+│
+├── open-brain-mcp/
+│   ├── Dockerfile              # Python 3.12-slim, installs deps, runs uvicorn main:app
+│   ├── requirements.txt        # fastapi, uvicorn, asyncpg, pgvector, ollama, pyyaml
+│   ├── main.py                 # FastAPI: /tools/capture_thought, /tools/recall, /tools/reingest_identity, /mcp SSE endpoint; startup identity ingest task
+│   └── db.py                   # asyncpg connection pool, schema init (thoughts, household_facts, locations, notes tables + HNSW indexes)
 │
 ├── dashboard/
 │   ├── Dockerfile              # Python 3.12-slim, Streamlit on port 8502
@@ -511,16 +675,33 @@ my-agent/
 │
 ├── ollama/                     # Empty directory (placeholder)
 │
+├── prometheus/
+│   └── prometheus.yml          # Scrape config: agent-core:8000/metrics + ollama-runner:11434/metrics, 15s interval, 30d retention
+├── grafana/
+│   └── provisioning/
+│       ├── datasources/
+│       │   └── prometheus.yaml # Auto-provision Prometheus datasource
+│       └── dashboards/
+│           ├── provider.yaml   # Dashboard file provider config
+│           └── agent.json      # 12-panel "Agent Health" starter dashboard (pre-loaded at boot)
 ├── SETUP_GUIDE.md              # Full setup walkthrough for new users (Phase 1 stack)
 ├── SETUP_GUIDE_2.md            # Policy engine, guardrails & identity bootstrap setup guide
 ├── SETUP_GUIDE_3.md            # Observability & structured tracing setup guide
 ├── SETUP_GUIDE_4.md            # Persistent memory, heartbeat & recall setup guide (Phase 4C)
 ├── SETUP_GUIDE_5.md            # Calculator & unit conversion skills setup guide (Phase 4D)
+├── SETUP_GUIDE_6.md            # python_exec, calendar, Brave Search setup guide (Phase 4E)
+├── SETUP_GUIDE_7.md            # Mumble voice gateway setup guide (Phase 5 polish)
+├── SETUP_GUIDE_8.md            # Open Brain MCP personal memory, privacy safeguards, Mumble cert auth (Phase 6 + 7)
+├── SETUP_GUIDE_9.md            # Grafana + Prometheus monitoring infrastructure (Phase 8A)
 ├── VIDEO_OUTLINE.md            # YouTube video 1 outline (foundation stack)
 ├── VIDEO_OUTLINE_2.md          # YouTube video 2 outline (guardrails + identity/bootstrap)
 ├── VIDEO_OUTLINE_3.md          # YouTube video 3 outline (observability + tracing)
 ├── VIDEO_OUTLINE_4.md          # YouTube video 4 outline (persistent memory + heartbeat)
 ├── VIDEO_OUTLINE_5.md          # YouTube video 5 outline (calculator + unit conversion + jobs)
+├── VIDEO_OUTLINE_6.md          # YouTube video 6 outline (python_exec + calendar + Brave Search)
+├── VIDEO_OUTLINE_7.md          # YouTube video 7 outline (Mumble voice gateway + Phase 5 polish)
+├── VIDEO_OUTLINE_8.md          # YouTube video 8 outline (Open Brain MCP + privacy + Mumble cert auth)
+├── VIDEO_OUTLINE_9.md          # YouTube video 9 outline (Grafana + Prometheus monitoring dashboard)
 └── PRD.md                      # This document
 ```
 
@@ -552,6 +733,7 @@ my-agent/
 | 20 | ~~Model OOM crash (500 error)~~ | **High** | `agent-core/app.py` | `qwen3:30b-a3b` (22.5 GB RAM) was set as TOOL_MODEL on a 15 GB system — Ollama threw an unhandled `ResponseError`, FastAPI returned 500. Fixed: (1) try/except around `run_tool_loop()` now returns HTTP 503 with a clear message; (2) TOOL_MODEL switched to `qwen3:8b` (5.2 GB) which fits. | FIXED |
 | 21 | ~~Blocking HTTP call in telegram event loop~~ | **Medium** | `telegram-gateway/bot.py` | `handle_message` called `requests.post` synchronously in an async handler — blocked the asyncio event loop, preventing the typing indicator from refreshing. Fixed: requests are now offloaded to `asyncio.to_thread` inside `_queue_worker`. | FIXED |
 | 22 | ~~codegemma 503 error (no tool-calling support)~~ | **High** | `agent-core/app.py` | `codegemma:latest` does not support Ollama tool calling — any request routed to CODING_MODEL with skills registered caused a 503. Fixed: CODING_MODEL consolidated to `qwen3:8b` which supports tool calling natively and matches or exceeds codegemma on coding benchmarks. codegemma removed entirely. | FIXED |
+| 23 | ~~ReadTimeout 503 on model cold start~~ | **High** | `agent-core/app.py:62` | `ollama.AsyncClient(timeout=300)` caused 503s when qwen3:8b was unloaded from VRAM (after idle period) and the cold reload + inference exceeded 300 seconds. Fixed: changed to `timeout=None` (unlimited) — Ollama's own keep-alive controls model lifetime; the agent-core client should never time out waiting for inference. | FIXED |
 
 ---
 
@@ -1066,39 +1248,34 @@ The agent is now a reliable calculator. It never guesses arithmetic or unit conv
 - `agent-core/tests/test_skills.py` — Appended `TestCalculateSkill` (20 tests) + `TestConvertUnitsSkill` (18 tests → 38 tests) + edge case fixes. **Total: 467 tests.** Post-4D patch: `TestWebSearchSkill` fully replaced (17 new tests for Brave LLM Context, Brave web, Tavily fallback, both-fail error — replaces 10 old Tavily-only tests). **Total: 471 tests.**
 
 **Deferred:**
-- `image_gen` — Stable Diffusion on hold pending GPU upgrade (current GTX 1070 8GB is fully utilized by qwen3:8b; need 24GB VRAM for a capable image model alongside the LLM stack).
+- `image_gen` — Stable Diffusion on hold pending GPU upgrade (gemma4:e4b uses ~6 GB VRAM leaving ~2 GB headroom on the GTX 1070 — not enough for a capable image model; need 24 GB VRAM).
 
 **Full details:** See `SETUP_GUIDE_5.md` and `VIDEO_OUTLINE_5.md`.
 
 ---
 
-#### Chunk 4E: Execution & Voice
+#### Chunk 4E: Execution & Voice ✅
 
-**Priority: MEDIUM**
+**Status: COMPLETE**
 
-| Skill | Description | Risk Level | Approval | Notes |
+| Skill | Description | Risk Level | Approval | Status |
 |---|---|---|---|---|
-| `python_exec` | Execute Python code in a sandboxed environment | High | Yes (always) | Runs in an isolated subprocess with restricted imports. Output captured and sanitized. No network access from sandbox. No file access outside `/sandbox`. |
-| `calendar` | Interact with calendar (read events, create reminders) | Medium | Create: Yes | Details TBD — need to choose calendar backend (Google Calendar API? CalDAV? Local?) |
-| `text_to_speech` | Convert text to audio | Low | No | Piper TTS (local, no API). Output saved to `/sandbox`. Used by Mumble gateway. |
+| `python_exec` | Execute Python code in sandboxed subprocess in /sandbox. Two-agent safety review (REASONING_MODEL) before approval gate. Minimal env, 30s timeout. | High | Yes (always) | ✅ Done |
+| `calendar_read` | List upcoming events from Outlook (MS Graph MSAL) or Proton (CalDAV). `private_channels={"telegram","cli"}`. | Low | No | ✅ Done |
+| `calendar_write` | Create/update/delete calendar events. `private_channels={"telegram","cli"}`, `requires_approval=True`. | High | Yes | ✅ Done |
 
-**Mumble Voice Interface** — a new gateway container, same pattern as telegram-gateway:
-- **Purpose:** One-on-one voice chat with the agent, accessible from anywhere, owner-only (like Telegram but audio)
-- **Flow:** Voice in Mumble → STT (Whisper) → POST /chat → Response text → TTS (Piper) → Voice in Mumble
-- **New containers:**
-  - `mumble-server` (murmurd) — Mumble voice server, password-protected, single user
-  - `mumble-gateway` — Bot that bridges voice to agent-core, with Whisper STT and Piper TTS
-- **Key decisions:**
-  - Whisper model size (tiny/base for CPU speed vs. small/medium for accuracy)
-  - TTS voice selection (Piper has many voice options)
-  - Latency budget (STT + LLM + TTS could be several seconds on CPU)
-  - Authentication: password-only sufficient since it's one-on-one with owner
+**Mumble Voice Interface** — complete gateway:
+- mumble-server (Murmur) + mumble-bot containers
+- VAD (webrtcvad mode 3) + STT (faster-whisper small/CPU/int8) + TTS (Piper en_US-lessac-medium)
+- Redis queue, approval relay, progress ticks (30s/90s/180s)
+- `_strip_for_speech()` strips markdown before TTS
+- Voice system prompt: 1-4 sentences, plain prose, no markdown
+- Owner certificate hash authentication → `mumble_owner` channel
+- PTT-flush VAD worker (300ms interval)
+- `think=False` + `AsyncClient` migration for qwen3:8b tool dispatch reliability
+- 30 new tests (10 VAD + 5 STT + 5 TTS + 10 bot)
 
-**Test criteria:**
-- Python execution runs in sandbox, cannot access files outside `/sandbox` or make network calls
-- Calendar details TBD
-- TTS generates audio file from text input
-- Mumble gateway transcribes voice, gets agent response, plays back audio
+**Full details:** See `SETUP_GUIDE_7.md` and `VIDEO_OUTLINE_7.md`.
 
 ---
 
@@ -1166,17 +1343,175 @@ The agent is now a reliable calculator. It never guesses arithmetic or unit conv
 
 ---
 
-### PHASE 6: Integrations & Infrastructure (Future)
+### PHASE 6: Personal Memory, Privacy & Business Skills (COMPLETE) ✅
 
-> Goal: Connect the agent to external productivity tools and expand infrastructure capabilities.
+> Goal: Give the agent a semantic long-term memory backed by pgvector, ingest its own identity files into memory, protect personal data from leaking to unauthorized channels, secure Mumble with cryptographic owner authentication, and add Summit Pine business assistant skills.
 
-#### Chunk 6A: Notion Integration (or similar)
+#### Chunk 6A: Open Brain MCP — Personal Memory ✅
+
+**Status: COMPLETE**
+
+- `postgres-brain` service — PostgreSQL 16 + pgvector extension, `brain_data` named volume
+- `open-brain-mcp` service — FastAPI MCP memory server. Tables: `thoughts` (768-dim vectors), `household_facts`, `calendar_events`, `locations`, `notes`
+- `memory_capture` and `memory_search` skills in agent-core, backed by pgvector semantic search
+- Brain context injected into every agent-core request via `memory_middleware.py` (`build_brain_context()`)
+- Telegram `/remember` command → pushes thought directly to Open Brain via agent-core
+- Voice "save that" / "remember that" → mumble-bot directly POSTs to `BRAIN_URL/tools/capture_thought`
+
+**Identity file ingest:**
+- Startup background task in `open-brain-mcp/main.py` reads SOUL.md, USER.md, IDENTITY.md, AGENTS.md from `/agent/` (read-only mount)
+- MD5 hash idempotency: each file's hash stored in `metadata->>'hash'` — only re-embeds when file content changes
+- `POST /tools/reingest_identity` endpoint for force-refresh without restart
+- Stored with `source='identity_file'` and `metadata: {type, file, hash}` for precise filtering
+
+#### Chunk 6B: Privacy Safeguards — Channel Trust Model ✅
+
+**Status: COMPLETE**
+
+Three-layer system ensuring personal data never leaks to non-private channels:
+
+1. **Skill execution gate** (`skill_runner.py`) — `private_channels` field on `SkillMetadata`. Checked before rate limit. Returns error message immediately if channel not allowed.
+2. **Memory middleware filter** (`memory_middleware.py`) — `build_brain_context()` strips identity_file thoughts and personal thought types from context before non-private-channel responses.
+3. **System prompt directive** (`app.py`) — explicit Privacy Policy block injected for non-private channels naming exactly what must never be shared.
+
+Private channels: `frozenset({"telegram", "cli", "mumble_owner"})`
+
+#### Chunk 6C: Mumble Owner Certificate Authentication ✅
+
+**Status: COMPLETE**
+
+- `MUMBLE_OWNER_CERT_HASH` env var — primary trust (cryptographically unforgeable, from pymumble_py3 UserState `hash` field)
+- `MUMBLE_OWNER_USERNAMES` env var — fallback trust (username allowlist, used before cert hash is configured)
+- `_get_channel(username, cert_hash)` in `mumble-bot/bot.py` — returns `"mumble_owner"` for trusted, `"mumble"` for untrusted
+- Hash discovery: bot logs cert hash on first connect when owner matches by username
+- `mumble_owner` channel gets full private data access; `mumble` channel gets public-only access
+
+#### Chunk 6D: Summit Pine Business Assistant Skills ✅
+
+**Status: COMPLETE**
+
+- `sp_inventory` — query inventory data, LOW risk, auto-allowed
+- `sp_orders` — look up order details, `private_channels={"telegram","cli"}` (customer data protection)
+- `sp_faq` — retrieve FAQ and product information, LOW risk, auto-allowed
+
+---
+
+### PHASE 7: Summit Pine Operations Expansion (COMPLETE)
+
+> Goal: Extend the Summit Pine business assistant with full operational coverage — labour tracking, recipe management, promotions, receipt ingestion (PDF + images + plain text), and a 10-tab analytics dashboard.
+
+#### Chunk 7A: New Skills — Time Log, Recipes, Promotions
+
+- **`sp_time_log`** — `SummitPineTimeLogSkill` — `log_hours`, `list_hours`, `time_summary`
+  - Accepts `hours` directly or `start_time` + `end_time` (auto-computed); times parsed from natural formats ("9am", "14:30", "2pm")
+  - Backed by `sp_time_logs` table in postgres-brain; hours stored as `DECIMAL(5,2)`
+  - Signal pattern `_SIGNAL_HOURS` triggers auto tool-forcing for messages like "I worked 3 hours" or "started at 9am ended at 2pm"
+- **`sp_recipes`** — `SummitPineRecipesSkill` — `add`, `get`, `list`, `update`, `delete`
+  - Recipes stored as JSONB ingredients array `[{name, amount, unit}]`; tags support multi-filter browsing
+  - Previously the `recipes` table had no grants; Phase 7 added GRANT + RLS policy for `sp_app`
+- **`sp_promotions`** — `SummitPinePromotionsSkill` — `create`, `list`, `get`, `update`, `deactivate`
+  - `sp_promotions` table: code (UNIQUE), discount_type (percent/fixed/bogo), applies_to (all/sku/category), sku_list (TEXT[]), max_uses, uses_count
+  - Signal pattern `_SIGNAL_PROMOTIONS` auto-routes promotion requests
+
+#### Chunk 7B: Open Brain MCP — New Tool Modules
+
+- **`tools/time_log.py`** — REST handlers for `log_hours`, `list_time_logs`, `time_summary`; `_parse_time()` helper for string→`time` conversion; hours auto-computed from start+end when not provided
+- **`tools/recipes.py`** — REST handlers for recipe CRUD; ingredients stored as JSONB
+- **`tools/promotions.py`** — REST handlers for promotion lifecycle; `increment_uses()` for coupon redemption tracking
+- **`main.py`** — 15 new endpoints added: `/tools/log_hours`, `/tools/list_time_logs`, `/tools/time_summary`, `/tools/add_recipe`, `/tools/get_recipe/{id}`, `/tools/list_recipes`, `/tools/update_recipe/{id}`, `/tools/delete_recipe/{id}`, `/tools/create_promotion`, `/tools/list_promotions`, `/tools/get_promotion/{id}`, `/tools/update_promotion/{id}`, `/tools/deactivate_promotion/{id}`, `/tools/increment_promotion_uses/{id}`
+
+#### Chunk 7C: Database — New Tables & Grants
+
+```sql
+-- New tables in postgres-brain
+sp_time_logs   — labour hour records with optional start/end times and hourly rate
+sp_promotions  — discount codes with type, scope, usage limits, and date windows
+recipes        — production recipes (already existed; grants added)
+```
+
+- RLS enabled on all three tables; `sp_app` role granted SELECT/INSERT/UPDATE
+- All tables have `created_at TIMESTAMPTZ DEFAULT NOW()` and UUID primary keys
+
+#### Chunk 7D: Receipt & Note Ingestion
+
+- **Telegram gateway**: hours-worked ack pattern (`_HOURS_PATTERN`) added to `handle_message()` — detects "worked X hours", "started at 9", "ended at 2", "log hours" and sends `⏱️ Got it, logging your hours...` ack
+- **Dashboard Costs tab — Scan Receipt**: PDF branch added using `pypdf.PdfReader` to extract text; image branch (pytesseract OCR) unchanged; both paths forward extracted text to agent `/chat`
+- **Dashboard Inventory tab — Quick Ingest**: text area + radio (Auto-detect / Inventory update / Expense log) generates a directed prompt to agent; handles bullet-point supply lists and free-form purchase notes
+
+#### Chunk 7E: Streamlit Dashboard Expansion (10 tabs)
+
+| Tab | Contents |
+|---|---|
+| Dashboard | KPIs, recent activity |
+| Inventory | Stock table + Quick Ingest panel |
+| Batches | Production batch records |
+| Orders | Order history |
+| Costs | Expense log + Scan Receipt (PDF + image) |
+| **Hours** | Monthly summary metrics, time log table, Log Hours form |
+| **Sales Analytics** | Revenue/Orders/AOV/Refunds KPIs, weekly stacked bar by channel, top products from JSONB, channel split pie |
+| **Recipes** | Browse/filter by tag, expandable recipe cards, Add Recipe form |
+| **Promotions** | Active promotions table, Create Promotion form, Deactivate form |
+| FAQ | Product knowledge search |
+
+- Dashboard calls `psycopg2` directly for tables/forms; calls agent `/chat` for AI-assisted ingestion
+- `pypdf>=4.0.0` added to `summit-pine-ui/requirements.txt`
+
+---
+
+### PHASE 8: Integrations & Infrastructure (In Progress)
+
+> Goal: Connect the agent to external productivity tools and expand infrastructure capabilities. Also includes infrastructure upgrades (monitoring, observability).
+
+#### Chunk 8A: Monitoring Infrastructure ✅
+
+**Status: COMPLETE**
+
+Replaced the hand-rolled Streamlit health dashboard with industry-standard Prometheus + Grafana.
+
+**What was implemented:**
+- `agent-core/metrics.py` — Prometheus metric definitions: `agent_chat_requests_total` / `agent_chat_responses_total` (labels: channel, model), `agent_skill_calls_total` / `agent_skill_errors_total` (label: skill_name), `agent_policy_decisions_total` (labels: decision, zone), `agent_approval_events_total` (label: status), `agent_chat_response_ms` histogram (label: model, 8 buckets 250ms–60s), `agent_queue_depth` gauge, `agent_pending_approvals` gauge.
+- `agent-core/tracing.py` — All `log_*` emitters now increment the corresponding Prometheus metric at emit time (zero code change required in calling code).
+- `agent-core/app.py` — `GET /metrics` endpoint (no auth — internal network only) serves `generate_latest()`. `_update_gauges()` background asyncio task refreshes `queue_depth` and `pending_approvals` gauges from Redis every 15 seconds.
+- `agent-core/requirements.txt` — `prometheus_client` added.
+- `prometheus/prometheus.yml` — Scrape config: `agent-core:8000` and `ollama-runner:11434` (Ollama exposes native Prometheus metrics). 15s scrape interval, 30d TSDB retention.
+- `grafana/provisioning/datasources/prometheus.yaml` — Auto-provisions Prometheus datasource at startup (no manual UI steps).
+- `grafana/provisioning/dashboards/provider.yaml` + `agent.json` — Pre-built 12-panel "Agent Health" dashboard, loaded automatically. Panels: request rate, queue depth, pending approvals, skill calls (1h), policy denials (1h), Ollama pending requests, chat requests by channel (time series), response time p50/p95/p99 by model, skill calls by name, policy decisions by type, Ollama VRAM allocated, Ollama request duration p95.
+- `docker-compose.yml` — `prometheus` and `grafana` services added with `prometheus_data` and `grafana_data` named volumes. Grafana on host port 3000.
+- `.env.example` — `GRAFANA_ADMIN_PASSWORD` added.
+
+**Key architecture decision:** The old Streamlit dashboard (`dashboard/`) is retained for Redis log browsing (raw event feed, security/audit panel, pending approvals list). Grafana handles all time-series operational monitoring. The two complement each other.
+
+#### Post-8A Patch: Model Upgrade — qwen3:8b → gemma4:e4b ✅
+
+**Status: COMPLETE**
+
+Replaced qwen3:8b with Google's Gemma 4 E4B as the REASONING_MODEL, TOOL_MODEL, and CODING_MODEL across the entire stack.
+
+**Motivation:**
+- qwen3:8b required `think=False` to prevent it reasoning itself out of tool calls, plus 15+ regex signal patterns to force tool use — maintenance burden that grows with every new skill
+- gemma4:e4b has native, architecture-level function calling support (τ2-bench Retail: 86.4% vs Gemma 3's 6.6%) — eliminates the need for tool-forcing hacks
+- 128K context window vs qwen3:8b's ~32K — handles long conversation histories and document-heavy tasks without truncation
+
+**Hardware fit:** 4.5B effective params (26B MoE), ~6 GB VRAM minimum — fits cleanly within the GTX 1070's 8 GB with 2 GB headroom. Ollama must be updated to v0.18+ (gemma4 requires a newer model format than v0.17).
+
+**Files changed:**
+- `docker-compose.yml` — `REASONING_MODEL`, `TOOL_MODEL`, `CODING_MODEL`, `LLM_MODEL` → `gemma4:e4b`
+- `agent-core/app.py` — hardcoded defaults for all three model constants → `gemma4:e4b`
+- `open-brain-mcp/metadata.py` — `REASONING_MODEL` default → `gemma4:e4b`
+- `web-ui/app.py` — routing hint help text updated
+- `agent-core/tests/test_skills.py` — `PythonExecSkill` test fixture model → `gemma4:e4b`
+
+**Pull command:** `docker exec ollama-runner ollama pull gemma4:e4b` (requires Ollama updated first: `docker compose pull ollama-runner && docker compose up -d ollama-runner`)
+
+**Full details:** See `SETUP_GUIDE_10.md` and `VIDEO_OUTLINE_11.md`.
+
+#### Chunk 8B: Notion Integration (or similar)
 
 - Read/write pages, databases, and tasks in Notion (or an alternative like Obsidian, Logseq)
 - Skill wrapping with full policy enforcement
 - Details TBD when we get here
 
-#### Chunk 6B: Docker Management
+#### Chunk 8C: Docker Management
 
 - **Approach TBD — this needs to be considered very carefully.**
 - The agent managing its own Docker infrastructure is inherently risky (container escape, self-modification)
@@ -1202,8 +1537,7 @@ The following capabilities are explicitly deferred:
 |---|---|---|---|
 | LLM Runtime | Ollama | latest | Local model inference |
 | Default Model | Phi-4 Mini | phi4-mini:latest | 3.8B params, fast tasks |
-| Reasoning / Tool Model | Qwen 3 | qwen3:8b | 8B params, reasoning, tool calling (74% GPU / 26% CPU on GTX 1070) |
-| Coding Model | Qwen 3 | qwen3:8b | Consolidated with REASONING_MODEL/TOOL_MODEL; codegemma removed (no tool-calling support) |
+| Reasoning / Tool / Coding Model | Gemma 4 | gemma4:e4b | 4.5B effective params (26B MoE), native function calling, 128K context, ~6 GB VRAM on GTX 1070 |
 | Deep Model | Qwen 2.5 | qwen2.5:14b | 14B params, long-context deep tasks (32K ctx) |
 | Embedding Model | nomic-embed-text | (via Ollama) | Served by ollama-runner; used by all ChromaDB paths via OllamaEmbeddingFunction |
 | Agent API | FastAPI | 0.115.0 | Central /chat endpoint |
@@ -1215,7 +1549,19 @@ The following capabilities are explicitly deferred:
 | LLM Orchestration | LangChain | latest | Used in web UI for ChatOllama, embeddings, text splitting |
 | Vector DB | ChromaDB | latest | RAG document storage, chat persistence |
 | Embeddings Model | nomic-embed-text | (via Ollama) | Used by all ChromaDB paths (rag_ingest, rag_search, memory.py, web-ui) via OllamaEmbeddingFunction |
-| Cache/Memory | Redis | alpine | Conversation history (active) + job queue (planned) |
+| Cache/Memory | Redis | alpine | Conversation history, job queue, chat queues, approval pub/sub |
+| Metrics Instrumentation | prometheus_client | latest | Exposes Prometheus-format counters/histograms/gauges from agent-core at `/metrics` |
+| Metrics Store | Prometheus | latest | Scrapes agent-core + Ollama every 15s; TSDB with 30-day retention |
+| Operational Dashboard | Grafana | latest | 12-panel "Agent Health" dashboard; auto-provisioned from `grafana/provisioning/`; port 3000 |
+| Personal Memory DB | PostgreSQL + pgvector | pg16 | Semantic memory store for Open Brain MCP (768-dim vectors, HNSW index) |
+| Personal Memory API | Open Brain MCP | (custom) | FastAPI memory service: thoughts, household data, identity ingest, MCP SSE endpoint |
+| STT | faster-whisper | latest | Speech-to-text in mumble-bot (small model, CPU, int8 quantization) |
+| TTS | Piper | en_US-lessac-medium | Text-to-speech in mumble-bot (ONNX, CPU, local voice) |
+| Voice Activity | webrtcvad | latest | VAD frame buffering and silence detection in mumble-bot |
+| Mumble Protocol | pymumble_py3 | latest | Mumble client protocol in mumble-bot (UserState cert hash access) |
+| Mumble Server | Murmur | mumblevoip/mumble-server:latest | Self-hosted Mumble voice server |
+| Calendar Auth | MSAL (microsoft-authentication-library) | latest | Device code flow for MS Graph OAuth2 token cache |
+| CalDAV | vobject / caldav | latest | Proton Calendar CalDAV access |
 | Container Runtime | Docker Compose | 3.8 | Service orchestration |
 | Language | Python | 3.12 | All custom services |
 
@@ -1236,14 +1582,14 @@ All secrets are stored in `.env` in the project root. **Never commit this file.*
 | `REDIS_URL` | agent-core, telegram-gateway, dashboard | Redis connection string including password (`redis://:${REDIS_PASSWORD}@redis:6379`) |
 | `AGENT_API_KEY` | agent-core, telegram-gateway, web-ui | Shared API key required in the `X-Api-Key` header for `POST /chat` and `POST /approval/{id}/respond`. Generated with `secrets.token_urlsafe(32)`. |
 | `DEFAULT_MODEL` | agent-core | Default Ollama model for fast tasks (default `phi4-mini:latest`) |
-| `REASONING_MODEL` | agent-core | Stronger Ollama model for planning/reasoning (default `qwen3:8b`) |
-| `CODING_MODEL` | agent-core | Model used for coding tasks when coding keywords detected (default `qwen3:8b`). Use model alias `"code"` to force. |
+| `REASONING_MODEL` | agent-core | Stronger Ollama model for planning/reasoning (default `gemma4:e4b`) |
+| `CODING_MODEL` | agent-core | Model used for coding tasks when coding keywords detected (default `gemma4:e4b`). Use model alias `"code"` to force. |
 | `BOOTSTRAP_MODEL` | agent-core | Model used during bootstrap conversation (default `mistral:latest`) |
 | `DEEP_MODEL` | agent-core | Large-context model for complex tasks (default `qwen2.5:14b`) |
 | `DEEP_NUM_CTX` | agent-core | Context window size for deep/coding models (default `32768`) |
 | `NUM_CTX` | agent-core | Context window size for standard models (default `32768`) |
 | `HISTORY_TOKEN_BUDGET` | agent-core | Max tokens for conversation history truncation (default `6000`) |
-| `TOOL_MODEL` | agent-core | Model used for tool calling when skills are registered (default `qwen3:8b`). Overrides auto-routing for `model=null` non-coding requests. |
+| `TOOL_MODEL` | agent-core | Model used for tool calling when skills are registered (default `gemma4:e4b`). Overrides auto-routing for `model=null` non-coding requests. |
 | `EMBED_MODEL` | agent-core, web-ui | Ollama model for embeddings via OllamaEmbeddingFunction (default `nomic-embed-text`). Must be pulled. |
 | `OLLAMA_HOST` | agent-core, web-ui | Ollama HTTP endpoint (default `http://ollama-runner:11434`). Used by OllamaEmbeddingFunction and heartbeat version check. |
 | `WATCH_MODEL` | agent-core (heartbeat) | Model tag to mention in Ollama update notifications (default `qwen3.5:35b-a3b`). Not pulled automatically. |
@@ -1251,6 +1597,16 @@ All secrets are stored in `.env` in the project root. **Never commit this file.*
 | `BRAVE_SEARCH_API_KEY` | secret broker → web_search skill | API key for Brave Search (primary backend). Get a key at brave.com/search/api. Free tier includes $5/month credit (~1000 queries). Set in `.env`; injected via docker-compose. Never passed to the LLM. |
 | `TAVILY_API_KEY` | secret broker → web_search skill | API key for Tavily web search (fallback when Brave fails). Get a free key at tavily.com. Set in `.env`; injected into agent-core via docker-compose. Never passed to the LLM. |
 | `HEARTBEAT_INTERVAL_SECONDS` | agent-core | Seconds between heartbeat ticks (default `60`). Set to `0` to disable. |
+| `BRAIN_URL` | agent-core, mumble-bot | URL for Open Brain MCP service (`http://open-brain-mcp:8002`). Used for brain context injection and "save that" voice capture. |
+| `BRAIN_POSTGRES_PASSWORD` | postgres-brain, open-brain-mcp | PostgreSQL password for the `brain` database. Generate with `secrets.token_urlsafe(32)`. |
+| `MS_GRAPH_CLIENT_ID` | agent-core (calendar_auth), open-brain-mcp | Azure app client ID for MSAL device code flow. Register app in Azure portal (public client, Calendars.Read + Calendars.ReadWrite scopes). |
+| `MUMBLE_SUPERUSER_PASSWORD` | mumble-server | Murmur admin (SuperUser) password. Set before first boot — used to configure channels. |
+| `MUMBLE_SERVER_PASSWORD` | mumble-bot | Optional: Mumble server join password (leave blank for open access within the network). |
+| `MUMBLE_OWNER_USERNAMES` | mumble-bot | Comma-separated list of Mumble display names trusted as owner (fallback auth before cert hash is set). Default: `Andy`. |
+| `MUMBLE_OWNER_CERT_HASH` | mumble-bot | Certificate fingerprint for the owner's Mumble client (primary, cryptographic auth). Discovered from bot logs on first connect. Leave blank until obtained. |
+| `PROTON_CALDAV_URL` | agent-core (calendar_read/write) | CalDAV endpoint for Proton Calendar (via proton-bridge container). |
+| `PROTON_CALDAV_USER` | agent-core (calendar_read/write) | Proton account username for CalDAV auth. |
+| `PROTON_CALDAV_PASSWORD` | agent-core (calendar_read/write) | Proton bridge-specific password (not account password — generated by proton-bridge CLI). |
 
 ---
 

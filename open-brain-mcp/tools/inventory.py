@@ -54,6 +54,37 @@ async def update_inventory(sku: str, quantity_on_hand: float = None,
             "quantity_on_hand": float(row["quantity_on_hand"]), "updated": True}
 
 
+async def bulk_update_quantities(updates: list) -> dict:
+    """Update quantity_on_hand for multiple SKUs in one call.
+
+    updates: list of {sku, quantity} dicts.
+    Returns {updated: [...], not_found: [...], errors: [...]}.
+    """
+    pool = await get_pool()
+    updated, not_found, errors = [], [], []
+    async with pool.acquire() as conn:
+        for item in updates:
+            sku = item.get("sku")
+            qty = item.get("quantity")
+            if sku is None or qty is None:
+                errors.append({"entry": item, "error": "sku and quantity required"})
+                continue
+            try:
+                row = await conn.fetchrow(
+                    "UPDATE inventory_items SET quantity_on_hand=$1, updated_at=NOW() "
+                    "WHERE sku=$2 RETURNING sku, name, quantity_on_hand",
+                    float(qty), sku,
+                )
+                if row:
+                    updated.append({"sku": row["sku"], "name": row["name"],
+                                    "quantity_on_hand": float(row["quantity_on_hand"])})
+                else:
+                    not_found.append(sku)
+            except Exception as e:
+                errors.append({"sku": sku, "error": str(e)})
+    return {"updated": updated, "not_found": not_found, "errors": errors}
+
+
 async def get_inventory_item(sku: str) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:

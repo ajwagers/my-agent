@@ -13,3 +13,7 @@ caldav
 msal
 icalendar
 httpx
+pytesseract
+Pillow
+prometheus_client
+sse-starlette

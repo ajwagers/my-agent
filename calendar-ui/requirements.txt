@@ -1,0 +1,4 @@
+streamlit
+streamlit-calendar==1.4.0
+msal
+requests

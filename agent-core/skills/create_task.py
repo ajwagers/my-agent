@@ -108,6 +108,7 @@ class CreateTaskSkill(SkillBase):
         from job_manager import JobManager
 
         user_id = params.pop("_user_id", "default")
+        persona = params.pop("_persona", "default")
         job_manager = JobManager(self._redis)
 
         job_type = params["job_type"]
@@ -133,6 +134,7 @@ class CreateTaskSkill(SkillBase):
             run_at=run_at_ts,
             delay_seconds=delay_seconds,
             interval_seconds=interval_seconds,
+            persona=persona,
         )
 
         job = job_manager.get(job_id)

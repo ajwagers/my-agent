@@ -53,6 +53,7 @@ class ListTasksSkill(SkillBase):
         from job_manager import JobManager
 
         user_id = params.pop("_user_id", "default")
+        params.pop("_persona", None)
         job_manager = JobManager(self._redis)
 
         jobs = job_manager.list_for_user(user_id)
@@ -79,5 +80,6 @@ class ListTasksSkill(SkillBase):
                 time_str = dt.strftime("%Y-%m-%d %H:%M UTC")
             except Exception:
                 time_str = str(run_at)
-            lines.append(f"{n}. [{status}] {prompt} — runs at {time_str} (ID: {job_id})")
+            persona_tag = f" [{job.get('persona', 'default')}]" if job.get("persona", "default") != "default" else ""
+            lines.append(f"{n}. [{status}]{persona_tag} {prompt} — runs at {time_str} (ID: {job_id})")
         return "\n".join(lines)

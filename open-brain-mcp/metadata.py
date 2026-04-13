@@ -1,10 +1,10 @@
-"""Metadata extraction via qwen3:8b — people, topics, action_items, type."""
+"""Metadata extraction via gemma4:e4b — people, topics, action_items, type."""
 import json
 import os
 import httpx
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama-runner:11434")
-REASONING_MODEL = os.getenv("REASONING_MODEL", "qwen3:8b")
+REASONING_MODEL = os.getenv("REASONING_MODEL", "gemma4:e4b")
 
 _PROMPT = """Extract structured metadata from this text. Return ONLY valid JSON:
 {

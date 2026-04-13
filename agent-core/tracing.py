@@ -18,6 +18,8 @@ import time
 import uuid
 from typing import Any, Optional
 
+import metrics
+
 # ---------------------------------------------------------------------------
 # Context variables — set once at request entry, read everywhere downstream
 # ---------------------------------------------------------------------------
@@ -226,6 +228,8 @@ def log_chat_request(message: str, model: str, **extra) -> str:
         "message_preview": _truncate(message, 100),
     }
     data.update(extra)
+    channel = _channel.get() or "unknown"
+    metrics.chat_requests_total.labels(channel=channel, model=model).inc()
     return _emit("chat", data)
 
 
@@ -248,6 +252,10 @@ def log_chat_response(
         },
     }
     data.update(extra)
+    channel = _channel.get() or "unknown"
+    metrics.chat_responses_total.labels(channel=channel, model=model).inc()
+    if total_duration_ms:
+        metrics.chat_response_ms.labels(model=model).observe(total_duration_ms)
     return _emit("chat", data)
 
 
@@ -258,6 +266,9 @@ def log_skill_call(skill_name: str, params: Optional[dict] = None, **extra) -> s
         "params": _sanitize(params or {}),
     }
     data.update(extra)
+    metrics.skill_calls_total.labels(skill_name=skill_name).inc()
+    if extra.get("status") == "error":
+        metrics.skill_errors_total.labels(skill_name=skill_name).inc()
     return _emit("skill", data)
 
 
@@ -278,6 +289,9 @@ def log_policy_decision(
         "reason": _truncate(reason),
     }
     data.update(extra)
+    metrics.policy_decisions_total.labels(
+        decision=decision or "unknown", zone=zone or "unknown"
+    ).inc()
     return _emit("policy", data)
 
 
@@ -303,6 +317,7 @@ def log_approval_event(
     if response_time_ms:
         data["response_time_ms"] = round(response_time_ms, 2)
     data.update(extra)
+    metrics.approval_events_total.labels(status=status or "unknown").inc()
     return _emit("approval", data)
 
 

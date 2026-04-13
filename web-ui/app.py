@@ -7,6 +7,7 @@ import json
 import uuid
 import os
 import requests
+import httpx
 
 st.set_page_config(layout="wide", page_title="Mr. Bultitude", page_icon="🐻")
 
@@ -127,33 +128,59 @@ def add_to_rag_database(text, source_name="manual input"):
     collection.add(documents=chunks, ids=ids, metadatas=metadatas)
     st.success(f"Added {len(chunks)} chunk(s) to RAG database from source: {source_name}!")
 
+def _stream_agent_response(payload: dict, status_placeholder):
+    """Generator that yields response tokens from /chat/stream.
+
+    Fires status_placeholder.info() for each skill-execution event so the user
+    sees live progress. Yields text strings consumed by st.write_stream().
+    """
+    with httpx.Client(timeout=None) as client:
+        with client.stream(
+            "POST",
+            f"{AGENT_URL}/chat/stream",
+            json=payload,
+            headers=_AUTH_HEADERS,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(line[6:])
+                except Exception:
+                    continue
+                event_type = event.get("type", "")
+                if event_type == "status":
+                    status_placeholder.caption(f"⚙️ {event.get('text', '')}")
+                elif event_type == "token":
+                    status_placeholder.empty()
+                    yield event.get("text", "")
+                elif event_type == "error":
+                    status_placeholder.empty()
+                    raise RuntimeError(event.get("text", "Unknown error from agent-core"))
+
+
 def process_user_prompt(prompt):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                payload = {
-                    "message": prompt,
-                    "user_id": st.session_state.user_id,
-                    "channel": "web-ui",
-                }
-                if st.session_state.model_hint:
-                    payload["model"] = st.session_state.model_hint
-                resp = requests.post(
-                    f"{AGENT_URL}/chat",
-                    json=payload,
-                    headers=_AUTH_HEADERS,
-                    timeout=None,
-                )
-                resp.raise_for_status()
-                reply = resp.json()["response"]
-                st.markdown(reply)
-                st.session_state.messages.append({"role": "assistant", "content": reply})
-            except Exception as e:
-                st.error(f"Error communicating with agent-core: {e}")
+        payload = {
+            "message": prompt,
+            "user_id": st.session_state.user_id,
+            "channel": "web-ui",
+        }
+        if st.session_state.model_hint:
+            payload["model"] = st.session_state.model_hint
+
+        status_placeholder = st.empty()
+        try:
+            reply = st.write_stream(_stream_agent_response(payload, status_placeholder))
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+        except Exception as e:
+            status_placeholder.empty()
+            st.error(f"Error communicating with agent-core: {e}")
 
 def setup_sidebar():
     with st.sidebar:
@@ -181,7 +208,7 @@ def setup_sidebar():
             hint = st.selectbox(
                 "Routing hint",
                 ["auto (agent decides)", "code", "reasoning", "deep"],
-                help="auto: agent-core picks the best model. code: qwen3-coder (coding tasks). reasoning: qwen3:8b. deep: qwen3:30b-a3b with 128K context."
+                help="auto: agent-core picks the best model. code: gemma4:e4b (coding tasks). reasoning: gemma4:e4b. deep: qwen2.5:14b with 32K context."
             )
             st.session_state.model_hint = None if hint.startswith("auto") else hint
 

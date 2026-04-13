@@ -20,7 +20,9 @@ class SummitPineInventorySkill(SkillBase):
             description=(
                 "Manage Summit Pine inventory. Actions: list_all, list_low_stock, "
                 "get_item (sku), update_quantity (sku + quantity), "
+                "bulk_update (updates=[{sku, quantity}, ...] — update many at once), "
                 "list_batches, get_batch (batch_number), record_batch, update_batch_status. "
+                "Use bulk_update when loading or refreshing a full inventory count. "
                 "Use list_low_stock to check what needs reordering."
             ),
             risk_level=RiskLevel.LOW,
@@ -33,13 +35,26 @@ class SummitPineInventorySkill(SkillBase):
                         "type": "string",
                         "enum": [
                             "list_all", "list_low_stock", "get_item",
-                            "update_quantity", "list_batches", "get_batch",
+                            "update_quantity", "bulk_update",
+                            "list_batches", "get_batch",
                             "record_batch", "update_batch_status",
                         ],
                         "description": "Inventory action to perform.",
                     },
-                    "sku": {"type": "string", "description": "Product SKU."},
-                    "quantity": {"type": "number", "description": "New quantity on hand."},
+                    "sku": {"type": "string", "description": "Product SKU (for single-item actions)."},
+                    "quantity": {"type": "number", "description": "New quantity on hand (for update_quantity)."},
+                    "updates": {
+                        "type": "array",
+                        "description": "List of {sku, quantity} objects for bulk_update.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "sku": {"type": "string"},
+                                "quantity": {"type": "number"},
+                            },
+                            "required": ["sku", "quantity"],
+                        },
+                    },
                     "category": {"type": "string", "description": "Filter by category: raw_material, finished_good, packaging."},
                     "batch_number": {"type": "string"},
                     "product_type": {"type": "string", "description": "shampoo_bar or conditioner_bar"},
@@ -73,6 +88,12 @@ class SummitPineInventorySkill(SkillBase):
                 resp = await client.put(
                     f"{BRAIN_URL}/tools/update_inventory/{params['sku']}",
                     json={"quantity_on_hand": params["quantity"]},
+                )
+            elif action == "bulk_update":
+                updates = params.get("updates") or []
+                resp = await client.post(
+                    f"{BRAIN_URL}/tools/bulk_update_inventory",
+                    json=updates,
                 )
             elif action == "list_batches":
                 resp = await client.get(f"{BRAIN_URL}/tools/list_batches",

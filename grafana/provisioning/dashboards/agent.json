@@ -1,0 +1,234 @@
+{
+  "title": "Agent Health",
+  "uid": "agent-health",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-3h", "to": "now" },
+  "timezone": "browser",
+  "panels": [
+
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Request Rate (1m)",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 1 },
+            { "color": "red", "value": 5 }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "sum(rate(agent_chat_requests_total[1m]))",
+        "legendFormat": "req/s"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Queue Depth",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 3 },
+            { "color": "red", "value": 8 }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "agent_queue_depth",
+        "legendFormat": "queued"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Pending Approvals",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 1 },
+            { "color": "red", "value": 3 }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "agent_pending_approvals",
+        "legendFormat": "pending"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Skill Calls (1h)",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [{
+        "expr": "sum(increase(agent_skill_calls_total[1h]))",
+        "legendFormat": "calls"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Policy Denials (1h)",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "sum(increase(agent_policy_decisions_total{decision=\"deny\"}[1h]))",
+        "legendFormat": "denied"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Ollama Pending Requests",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 2 },
+            { "color": "red", "value": 5 }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "ollama_pending_requests",
+        "legendFormat": "pending"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Chat Requests by Channel",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "options": { "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2 } } },
+      "targets": [{
+        "expr": "sum by (channel) (rate(agent_chat_requests_total[2m]))",
+        "legendFormat": "{{channel}}"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Response Time p50 / p95 / p99",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "options": { "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "lineWidth": 2 } } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, model) (rate(agent_chat_response_ms_bucket[5m])))",
+          "legendFormat": "p50 {{model}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(agent_chat_response_ms_bucket[5m])))",
+          "legendFormat": "p95 {{model}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, model) (rate(agent_chat_response_ms_bucket[5m])))",
+          "legendFormat": "p99 {{model}}"
+        }
+      ],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Skill Calls by Name",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "options": { "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2 } } },
+      "targets": [{
+        "expr": "sum by (skill_name) (rate(agent_skill_calls_total[5m]))",
+        "legendFormat": "{{skill_name}}"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Policy Decisions",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "options": { "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2 } } },
+      "targets": [{
+        "expr": "sum by (decision) (rate(agent_policy_decisions_total[5m]))",
+        "legendFormat": "{{decision}}"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Ollama GPU Memory (VRAM used)",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "options": { "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "lineWidth": 2 } } },
+      "targets": [{
+        "expr": "ollama_memory_allocated_bytes",
+        "legendFormat": "VRAM allocated"
+      }],
+      "datasource": "Prometheus"
+    },
+
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Ollama Request Duration p95",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "options": { "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 2 } } },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum by (le) (rate(ollama_request_duration_seconds_bucket[5m])))",
+        "legendFormat": "p95"
+      }],
+      "datasource": "Prometheus"
+    }
+
+  ]
+}

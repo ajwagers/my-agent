@@ -1,0 +1,77 @@
+#!/bin/bash
+# Host-side wrapper for agent-core CLI.
+#
+# Usage (same as docker exec -it agent-core agent ...):
+#   ./agent chat "hello"
+#   ./agent chat --file /host/path/doc.pdf "summarize this"
+#   ./agent chat --file report.txt          # auto-summarise
+#
+# --file accepts host paths; the file is copied into the container,
+# used, then cleaned up automatically.
+
+CONTAINER=agent-core
+ARGS=()
+FILE_HOST=""
+FILE_CONTAINER=""
+
+# Intercept TUI subcommands — run locally, not inside the container
+_tui_cmd() {
+    local script="$1"; shift
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if [[ -z "$AGENT_API_KEY" && -f "$SCRIPT_DIR/.env" ]]; then
+        AGENT_API_KEY=$(grep -E '^AGENT_API_KEY=' "$SCRIPT_DIR/.env" | cut -d= -f2- | tr -d '"'"'" | head -1)
+    fi
+    exec python3 "$SCRIPT_DIR/$script" ${AGENT_API_KEY:+--key "$AGENT_API_KEY"} "$@"
+}
+
+case "${1}" in
+    dashboard) shift
+               SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+               exec python3 "$SCRIPT_DIR/tui_dashboard.py" "$@" ;;
+    agents)    shift; _tui_cmd tui_agents.py "$@" ;;
+esac
+
+# Parse args: intercept --file <path> and rewrite to container path
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --file)
+            FILE_HOST="$2"
+            shift 2
+            ;;
+        --file=*)
+            FILE_HOST="${1#--file=}"
+            shift
+            ;;
+        *)
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ -n "$FILE_HOST" ]]; then
+    if [[ ! -f "$FILE_HOST" ]]; then
+        echo "Error: file not found: $FILE_HOST" >&2
+        exit 1
+    fi
+    BASENAME=$(basename "$FILE_HOST")
+    FILE_CONTAINER="/tmp/agent_upload_$$_${BASENAME}"
+    docker cp "$FILE_HOST" "${CONTAINER}:${FILE_CONTAINER}" >/dev/null
+    ARGS+=("--file" "$FILE_CONTAINER")
+fi
+
+# Use -it only when connected to a real terminal
+if [[ -t 0 && -t 1 ]]; then
+    docker exec -it "$CONTAINER" agent "${ARGS[@]}"
+else
+    docker exec "$CONTAINER" agent "${ARGS[@]}"
+fi
+EXIT_CODE=$?
+
+# Clean up uploaded file
+if [[ -n "$FILE_CONTAINER" ]]; then
+    docker exec "$CONTAINER" rm -f "$FILE_CONTAINER" 2>/dev/null
+fi
+
+exit $EXIT_CODE

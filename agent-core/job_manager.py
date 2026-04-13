@@ -19,6 +19,20 @@ class JobManager:
     def __init__(self, redis_client):
         self._redis = redis_client
 
+    def find_duplicate(self, user_id: str, prompt: str, job_type: str) -> Optional[str]:
+        """Return the ID of an existing active job with the same prompt/type, or None."""
+        job_ids = self._redis.smembers(f"jobs:user:{user_id}")
+        for job_id in job_ids:
+            job = self.get(job_id)
+            if (
+                job
+                and job.get("prompt") == prompt
+                and job.get("job_type") == job_type
+                and job.get("status") in ("pending", "running")
+            ):
+                return job_id
+        return None
+
     def create(
         self,
         user_id: str,
@@ -27,8 +41,18 @@ class JobManager:
         run_at: Optional[float] = None,
         delay_seconds: int = 0,
         interval_seconds: Optional[int] = None,
+        persona: str = "default",
     ) -> str:
-        """Create a new job and return its ID."""
+        """Create a new job and return its ID.
+
+        For recurring jobs, returns the existing job ID if an identical active
+        job already exists, preventing duplicates from repeated requests.
+        """
+        if job_type == "recurring":
+            existing = self.find_duplicate(user_id, prompt, job_type)
+            if existing:
+                return existing
+
         job_id = uuid.uuid4().hex
         now = time.time()
 
@@ -47,6 +71,7 @@ class JobManager:
             "status": "pending",
             "created_at": str(now),
             "run_at": str(scheduled_at),
+            "persona": persona,
         }
         if interval_seconds is not None:
             mapping["interval_seconds"] = str(interval_seconds)
@@ -159,3 +184,31 @@ class JobManager:
     def release_lock(self, job_id: str) -> None:
         """Release execution lock."""
         self._redis.delete(f"jobs:lock:{job_id}")
+
+    def list_all_scheduled(self) -> List[Dict]:
+        """Return all jobs in the scheduled ZSET, sorted by run_at ascending."""
+        pairs = self._redis.zrange(_SCHEDULED_KEY, 0, -1, withscores=True)
+        jobs = []
+        for job_id, score in pairs:
+            if isinstance(job_id, bytes):
+                job_id = job_id.decode()
+            job = self.get(job_id)
+            if job:
+                jobs.append(job)
+        return jobs
+
+    def list_recent(self, user_id: str, limit: int = 30) -> List[Dict]:
+        """Return recent jobs for a user sorted by created_at descending.
+
+        Includes jobs in all states (pending, running, completed, failed).
+        """
+        raw_ids = self._redis.smembers(f"jobs:user:{user_id}")
+        jobs = []
+        for job_id in raw_ids:
+            if isinstance(job_id, bytes):
+                job_id = job_id.decode()
+            job = self.get(job_id)
+            if job:
+                jobs.append(job)
+        jobs.sort(key=lambda j: j.get("created_at", 0), reverse=True)
+        return jobs[:limit]

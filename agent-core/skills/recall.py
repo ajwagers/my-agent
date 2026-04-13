@@ -45,7 +45,7 @@ class RecallSkill(SkillBase):
             rate_limit="recall",
             requires_approval=False,
             max_calls_per_turn=5,
-            private_channels=frozenset({"telegram", "cli"}),
+            private_channels=frozenset({"telegram", "cli", "web-ui"}),
             parameters={
                 "type": "object",
                 "properties": {

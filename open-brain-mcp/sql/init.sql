@@ -208,6 +208,179 @@ CREATE TABLE IF NOT EXISTS grocery_lists (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ── Summit Pine expenses / cost tracking ─────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS sp_expenses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    expense_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    category TEXT NOT NULL,
+    -- category: ingredients | packaging | equipment | shipping | marketing | other
+    description TEXT NOT NULL,
+    supplier TEXT,
+    amount DECIMAL(10,2) NOT NULL,
+    sku TEXT,          -- FK reference (soft — items may be deleted)
+    quantity DECIMAL(10,3),
+    unit TEXT,
+    receipt_ref TEXT,  -- invoice number or receipt reference
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS sp_expenses_date_idx     ON sp_expenses (expense_date DESC);
+CREATE INDEX IF NOT EXISTS sp_expenses_category_idx ON sp_expenses (category);
+CREATE INDEX IF NOT EXISTS sp_expenses_sku_idx      ON sp_expenses (sku);
+
+-- ── Row-Level Security (Summit Pine tables) ───────────────────────────────────
+-- The `brain` superuser bypasses RLS. A restricted `sp_app` role is granted
+-- access only to Summit Pine tables — keeping personal (thoughts, household,
+-- calendar) data inaccessible to the Summit Pine Streamlit UI credentials.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sp_app') THEN
+        CREATE ROLE sp_app LOGIN PASSWORD 'summit_pine_app';
+    END IF;
+END $$;
+
+GRANT CONNECT ON DATABASE brain TO sp_app;
+GRANT USAGE   ON SCHEMA public TO sp_app;
+
+-- sp_app can read+write Summit Pine tables only
+GRANT SELECT, INSERT, UPDATE ON inventory_items   TO sp_app;
+GRANT SELECT, INSERT, UPDATE ON production_batches TO sp_app;
+GRANT SELECT, INSERT, UPDATE ON orders            TO sp_app;
+GRANT SELECT, INSERT, UPDATE ON faq_entries       TO sp_app;
+GRANT SELECT, INSERT, UPDATE ON sp_expenses       TO sp_app;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public     TO sp_app;
+
+ALTER TABLE inventory_items    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE production_batches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE faq_entries        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sp_expenses        ENABLE ROW LEVEL SECURITY;
+
+-- brain (service user) has full bypass — all rows visible
+DO $$
+DECLARE tbl TEXT;
+BEGIN
+    FOREACH tbl IN ARRAY ARRAY['inventory_items','production_batches','orders','faq_entries','sp_expenses']
+    LOOP
+        EXECUTE format('DROP POLICY IF EXISTS brain_all ON %I', tbl);
+        EXECUTE format(
+            'CREATE POLICY brain_all ON %I TO brain USING (true) WITH CHECK (true)',
+            tbl);
+        EXECUTE format('DROP POLICY IF EXISTS sp_app_all ON %I', tbl);
+        EXECUTE format(
+            'CREATE POLICY sp_app_all ON %I TO sp_app USING (true) WITH CHECK (true)',
+            tbl);
+    END LOOP;
+END $$;
+
+-- ── Labour time log ──────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS sp_time_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    log_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    person TEXT NOT NULL DEFAULT 'owner',
+    -- person: owner | helper | contractor
+    hours DECIMAL(5,2) NOT NULL,
+    start_time TIME,
+    end_time TIME,
+    task_description TEXT,
+    hourly_rate DECIMAL(10,2),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS time_logs_date_idx   ON sp_time_logs (log_date DESC);
+CREATE INDEX IF NOT EXISTS time_logs_person_idx ON sp_time_logs (person);
+
+-- ── Promotions / discount codes ───────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS sp_promotions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name TEXT NOT NULL,
+    code TEXT UNIQUE,
+    discount_type TEXT NOT NULL DEFAULT 'percent',
+    -- discount_type: percent | fixed_amount | free_shipping | buy_x_get_y
+    discount_value DECIMAL(10,2) NOT NULL,
+    applies_to TEXT NOT NULL DEFAULT 'all',
+    -- applies_to: all | sku_list | category
+    sku_list TEXT[],
+    category TEXT,
+    min_order_amount DECIMAL(10,2),
+    max_uses INTEGER,
+    uses_count INTEGER DEFAULT 0,
+    start_date DATE NOT NULL,
+    end_date DATE,
+    is_active BOOLEAN DEFAULT TRUE,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS promotions_active_idx ON sp_promotions (is_active, start_date, end_date);
+CREATE INDEX IF NOT EXISTS promotions_code_idx   ON sp_promotions (code);
+
+-- Grant sp_app access to the new tables and to the existing recipes table
+GRANT SELECT, INSERT, UPDATE ON sp_time_logs  TO sp_app;
+GRANT SELECT, INSERT, UPDATE ON sp_promotions TO sp_app;
+GRANT SELECT, INSERT, UPDATE ON recipes       TO sp_app;
+
+ALTER TABLE sp_time_logs  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sp_promotions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recipes        ENABLE ROW LEVEL SECURITY;
+
+DO $$
+DECLARE tbl TEXT;
+BEGIN
+    FOREACH tbl IN ARRAY ARRAY['sp_time_logs','sp_promotions','recipes']
+    LOOP
+        EXECUTE format('DROP POLICY IF EXISTS brain_all ON %I', tbl);
+        EXECUTE format(
+            'CREATE POLICY brain_all ON %I TO brain USING (true) WITH CHECK (true)',
+            tbl);
+        EXECUTE format('DROP POLICY IF EXISTS sp_app_all ON %I', tbl);
+        EXECUTE format(
+            'CREATE POLICY sp_app_all ON %I TO sp_app USING (true) WITH CHECK (true)',
+            tbl);
+    END LOOP;
+END $$;
+
+-- ── Personal to-do / shopping list ───────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS todos (
+    id          SERIAL PRIMARY KEY,
+    user_id     TEXT        NOT NULL DEFAULT 'owner',
+    text        TEXT        NOT NULL,
+    category    TEXT        NOT NULL DEFAULT 'task',
+    -- category: task | purchase | errand
+    priority    TEXT        NOT NULL DEFAULT 'medium',
+    -- priority: low | medium | high
+    status      TEXT        NOT NULL DEFAULT 'pending',
+    -- status: pending | done
+    source      TEXT        NOT NULL DEFAULT 'telegram',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS todos_status_idx   ON todos (status);
+CREATE INDEX IF NOT EXISTS todos_user_idx     ON todos (user_id, status);
+CREATE INDEX IF NOT EXISTS todos_category_idx ON todos (category);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON todos       TO sp_app;
+GRANT USAGE ON SEQUENCE todos_id_seq               TO sp_app;
+
+ALTER TABLE todos ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    EXECUTE 'DROP POLICY IF EXISTS brain_all ON todos';
+    EXECUTE 'CREATE POLICY brain_all ON todos TO brain USING (true) WITH CHECK (true)';
+    EXECUTE 'DROP POLICY IF EXISTS sp_app_all ON todos';
+    EXECUTE 'CREATE POLICY sp_app_all ON todos TO sp_app USING (true) WITH CHECK (true)';
+END $$;
+
 -- ── Vector similarity search functions ───────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION search_thoughts(

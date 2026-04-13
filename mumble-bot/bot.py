@@ -157,6 +157,45 @@ def _resolve_approval(resolution: str):
     mumble.my_channel().send_text_message(f"✓ {resolution.capitalize()}.")
 
 
+def _handle_mumble_switch(username: str, cert_hash: str, persona_name: str | None) -> None:
+    """Handle /switch command from Mumble text channel."""
+    if persona_name is None:
+        # List personas
+        try:
+            resp = requests.get(f"{AGENT_URL}/personas", timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            current = redis_client.get(f"persona:session:{username}") or "default"
+            lines = ["Available agents:"]
+            for p in data.get("personas", []):
+                marker = " (active)" if p["name"] == current else ""
+                lines.append(f"  {p['display_name']} — /switch {p['name']}{marker}")
+            mumble.my_channel().send_text_message("<br>".join(lines))
+        except Exception as e:
+            mumble.my_channel().send_text_message(f"Could not fetch personas: {e}")
+        return
+
+    try:
+        resp = requests.post(
+            f"{AGENT_URL}/persona/session",
+            json={"user_id": username, "persona_name": persona_name},
+            headers={"X-Api-Key": os.environ.get("AGENT_API_KEY", "")},
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            mumble.my_channel().send_text_message(f"Unknown agent: {persona_name}. Try /switch to see options.")
+            return
+        resp.raise_for_status()
+        data = resp.json()
+        display = data.get("display_name", persona_name)
+        if persona_name == "default":
+            mumble.my_channel().send_text_message("Switched back to the main AI agent.")
+        else:
+            mumble.my_channel().send_text_message(f"Switched to {display}.")
+    except Exception as e:
+        mumble.my_channel().send_text_message(f"Switch failed: {e}")
+
+
 # ── Callbacks ────────────────────────────────────────────────────────────────
 
 def sound_received_cb(user, soundchunk):
@@ -232,6 +271,12 @@ def text_received_cb(message):
         if re.match(r"^(no|deny|n)$", text, re.IGNORECASE):
             _resolve_approval("denied")
             return
+
+    # Handle /switch command directly without going through the LLM
+    if text.lower().startswith("/switch"):
+        parts = text.split()
+        _handle_mumble_switch(username, cert_hash, parts[1] if len(parts) > 1 else None)
+        return
 
     job = {"type": "text", "username": username, "cert_hash": cert_hash, "message": text}
     redis_client.lpush(QUEUE_KEY, json.dumps(job))
